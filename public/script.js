@@ -130,26 +130,36 @@ let audioContext = null;
 let audioAnalyser = null;
 let animationId = null;
 
-// Function to fetch TURN server credentials dynamically from Metered API
+// Function to fetch TURN server credentials dynamically from Metered API (with global caching)
+let cachedTurnCredentials = null;
+let turnCredentialsPromise = null;
+
 async function getTurnCredentials() {
-    try {
-        // Calling the REST API to fetch the TURN Server Credentials
-        const response = await fetch("https://globalconnect.metered.live/api/v1/turn/credentials?apiKey=09587faf8d3d9a4627979ab8196eb8f0ee4c");
+    if (cachedTurnCredentials) return cachedTurnCredentials;
+    if (turnCredentialsPromise) return turnCredentialsPromise;
 
-        if (!response.ok) {
-            console.warn('Failed to fetch TURN credentials, using fallback servers');
-            return getFallbackIceServers();
+    turnCredentialsPromise = (async () => {
+        try {
+            const response = await fetch("https://globalconnect.metered.live/api/v1/turn/credentials?apiKey=09587faf8d3d9a4627979ab8196eb8f0ee4c");
+            if (!response.ok) {
+                console.warn('Failed to fetch TURN credentials, using fallback servers');
+                cachedTurnCredentials = getFallbackIceServers();
+                return cachedTurnCredentials;
+            }
+            const iceServers = await response.json();
+            console.log('%c✅ Dynamic TURN credentials loaded successfully', 'color: green; font-weight: bold');
+            cachedTurnCredentials = iceServers;
+            return iceServers;
+        } catch (error) {
+            console.error('Error fetching TURN credentials:', error);
+            console.warn('Using fallback TURN servers');
+            cachedTurnCredentials = getFallbackIceServers();
+            return cachedTurnCredentials;
+        } finally {
+            turnCredentialsPromise = null;
         }
-
-        // Saving the response in the iceServers array
-        const iceServers = await response.json();
-        console.log('%c✅ Dynamic TURN credentials loaded successfully', 'color: green; font-weight: bold');
-        return iceServers;
-    } catch (error) {
-        console.error('Error fetching TURN credentials:', error);
-        console.warn('Using fallback TURN servers');
-        return getFallbackIceServers();
-    }
+    })();
+    return turnCredentialsPromise;
 }
 
 // Fallback ICE servers in case the Metered API is unavailable
@@ -876,7 +886,9 @@ socket.on('disconnected_local', () => {
 // ==========================================================================
 
 // Group State Variables
-let groupPeers = new Map(); // memberId -> { pc, displayName, audioElement, videoElement, cardElement, ... }
+let groupPeers = new Map(); // memberId -> { pc, displayName, audioElement, videoStream, ... }
+let groupPendingConnections = new Map(); // memberId -> Promise<peerData>
+let groupQueuedCandidates = new Map(); // memberId -> Array of candidate objects
 let groupAudioStream = null;
 let groupVideoStream = null;
 let isGroupAudioMuted = false;
@@ -1219,34 +1231,18 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
         memberId: targetMemberId,
         displayName: targetDisplayName,
         audioElement: remoteAudioEl,
-        remoteStream: new MediaStream(),
-        videoTrack: null,
-        audioTrack: null,
+        videoStream: null,
         isCameraOn: false,
         isAudioMuted: false
     };
 
     groupPeers.set(targetMemberId, peerData);
 
-    // Always pre-negotiate audio and video transceivers so video works seamlessly
-    try {
-        pc.addTransceiver('audio', { direction: 'sendrecv' });
-        pc.addTransceiver('video', { direction: 'sendrecv' });
-    } catch (e) {
-        console.warn('[Group] addTransceiver note:', e);
-    }
-
     // Add local audio tracks if available
     if (groupAudioStream) {
         const audioTrack = groupAudioStream.getAudioTracks()[0];
         if (audioTrack) {
-            const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio') ||
-                           pc.getSenders().find(s => !s.track);
-            if (sender) {
-                sender.replaceTrack(audioTrack).catch(e => console.warn('replaceTrack audio:', e));
-            } else {
-                pc.addTrack(audioTrack, groupAudioStream);
-            }
+            pc.addTrack(audioTrack, groupAudioStream);
         }
     }
 
@@ -1254,13 +1250,16 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
     if (groupVideoStream && isLocalCameraOn) {
         const videoTrack = groupVideoStream.getVideoTracks()[0];
         if (videoTrack) {
-            const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video') ||
-                           pc.getSenders().find(s => !s.track);
-            if (sender) {
-                sender.replaceTrack(videoTrack).catch(e => console.warn('replaceTrack video:', e));
-            } else {
-                pc.addTrack(videoTrack, groupVideoStream);
-            }
+            pc.addTrack(videoTrack, groupVideoStream);
+        }
+    }
+
+    // Always pre-negotiate video transceiver if camera not on so video can start without negotiation collision
+    if (!groupVideoStream || !isLocalCameraOn) {
+        try {
+            pc.addTransceiver('video', { direction: 'sendrecv' });
+        } catch (e) {
+            console.warn('[Group] addTransceiver note:', e);
         }
     }
 
@@ -1278,31 +1277,45 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
     pc.ontrack = (event) => {
         console.log(`[Group] ontrack from ${targetMemberId}: kind=${event.track.kind}`);
         const currentPeer = groupPeers.get(targetMemberId);
-        if (currentPeer && event.track) {
-            currentPeer.remoteStream.addTrack(event.track);
-        }
 
         if (event.track.kind === 'audio') {
-            const streamToPlay = (currentPeer && currentPeer.remoteStream) || event.streams[0] || new MediaStream([event.track]);
+            const streamToPlay = event.streams[0] || new MediaStream([event.track]);
             remoteAudioEl.srcObject = streamToPlay;
             remoteAudioEl.play().catch(e => console.warn('Remote audio play blocked:', e));
         } else if (event.track.kind === 'video') {
             const cardVideoEl = document.getElementById(`video-${targetMemberId}`);
             const avatarBox = document.getElementById(`avatar-box-${targetMemberId}`);
             const camBadge = document.getElementById(`cam-badge-${targetMemberId}`);
+            const streamToPlay = event.streams[0] || new MediaStream([event.track]);
+
+            if (currentPeer) {
+                currentPeer.videoStream = streamToPlay;
+            }
 
             if (cardVideoEl) {
-                const streamToPlay = (currentPeer && currentPeer.remoteStream) || event.streams[0] || new MediaStream([event.track]);
                 cardVideoEl.srcObject = streamToPlay;
-                cardVideoEl.classList.remove('hidden');
-                if (avatarBox) avatarBox.classList.add('hidden');
-                if (camBadge) {
-                    camBadge.className = 'media-badge cam-on';
-                    camBadge.innerHTML = '<i class="fas fa-video"></i>';
+                if (currentPeer && currentPeer.isCameraOn) {
+                    cardVideoEl.classList.remove('hidden');
+                    if (avatarBox) avatarBox.classList.add('hidden');
+                    if (camBadge) {
+                        camBadge.className = 'media-badge cam-on';
+                        camBadge.innerHTML = '<i class="fas fa-video"></i>';
+                    }
+                    cardVideoEl.play().catch(e => console.warn('Remote video play blocked:', e));
                 }
-                cardVideoEl.play().catch(e => console.warn('Remote video play blocked:', e));
             }
-            if (currentPeer) currentPeer.isCameraOn = true;
+
+            event.track.onunmute = () => {
+                console.log(`[Group] Track unmuted for ${targetMemberId}`);
+                if (cardVideoEl) {
+                    cardVideoEl.srcObject = streamToPlay;
+                    if (currentPeer && currentPeer.isCameraOn) {
+                        cardVideoEl.classList.remove('hidden');
+                        if (avatarBox) avatarBox.classList.add('hidden');
+                        cardVideoEl.play().catch(e => {});
+                    }
+                }
+            };
         }
     };
 
@@ -1331,17 +1344,37 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
 socket.on('group_signal', async ({ from, data }) => {
     let peer = groupPeers.get(from);
     if (!peer) {
-        // If received offer from a peer not yet registered in map, ensure card exists FIRST then create PC
-        console.log(`[Group] Incoming signal from new peer ${from}`);
-        createRemoteParticipantCard(from, 'Friend', false, getStableAvatarForUser(from));
-        peer = await createGroupPeerConnection(from, 'Friend', false);
+        if (groupPendingConnections.has(from)) {
+            peer = await groupPendingConnections.get(from);
+        } else {
+            console.log(`[Group] Incoming signal from new peer ${from}`);
+            createRemoteParticipantCard(from, 'Friend', false, getStableAvatarForUser(from));
+            const connPromise = createGroupPeerConnection(from, 'Friend', false);
+            groupPendingConnections.set(from, connPromise);
+            peer = await connPromise;
+            groupPendingConnections.delete(from);
+        }
     }
 
+    if (!peer || !peer.pc) return;
     const pc = peer.pc;
+
     try {
         if (data.offer) {
             console.log(`[Group] Received offer from ${from}`);
             await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+
+            // Drain queued ICE candidates
+            const queued = groupQueuedCandidates.get(from) || [];
+            for (const cand of queued) {
+                try {
+                    await pc.addIceCandidate(new RTCIceCandidate(cand));
+                } catch (e) {
+                    console.warn('[Group] Queued candidate error:', e);
+                }
+            }
+            groupQueuedCandidates.delete(from);
+
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             socket.emit('group_signal', {
@@ -1351,18 +1384,26 @@ socket.on('group_signal', async ({ from, data }) => {
         } else if (data.answer) {
             console.log(`[Group] Received answer from ${from}`);
             await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+
+            // Drain queued ICE candidates
+            const queued = groupQueuedCandidates.get(from) || [];
+            for (const cand of queued) {
+                try {
+                    await pc.addIceCandidate(new RTCIceCandidate(cand));
+                } catch (e) {
+                    console.warn('[Group] Queued candidate error:', e);
+                }
+            }
+            groupQueuedCandidates.delete(from);
         } else if (data.candidate) {
-            if (pc.remoteDescription) {
+            if (pc.remoteDescription && pc.remoteDescription.type) {
                 await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
             } else {
-                // If remote description not yet set, wait briefly
-                setTimeout(async () => {
-                    try {
-                        if (pc.remoteDescription) {
-                            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-                        }
-                    } catch (e) {}
-                }, 500);
+                console.log(`[Group] Queuing candidate from ${from}`);
+                if (!groupQueuedCandidates.has(from)) {
+                    groupQueuedCandidates.set(from, []);
+                }
+                groupQueuedCandidates.get(from).push(data.candidate);
             }
         }
     } catch (err) {
@@ -1409,8 +1450,8 @@ socket.on('group_media_state', ({ memberId, isAudioMuted, isCameraOn }) => {
 
         if (isCameraOn) {
             if (videoEl) {
-                if (peer.remoteStream && peer.remoteStream.getVideoTracks().length > 0) {
-                    videoEl.srcObject = peer.remoteStream;
+                if (peer.videoStream) {
+                    videoEl.srcObject = peer.videoStream;
                 }
                 videoEl.classList.remove('hidden');
                 videoEl.play().catch(e => console.warn('Play video on state change:', e));
@@ -1495,18 +1536,16 @@ async function toggleGroupCamera() {
                     await sender.replaceTrack(videoTrack);
                 } else {
                     pc.addTrack(videoTrack, groupVideoStream);
-                }
-
-                // Renegotiate with peer
-                try {
-                    const offer = await pc.createOffer();
-                    await pc.setLocalDescription(offer);
-                    socket.emit('group_signal', {
-                        to: peerId,
-                        data: { offer: offer }
-                    });
-                } catch (e) {
-                    console.error('[Camera] Renegotiation error with', peerId, e);
+                    try {
+                        const offer = await pc.createOffer();
+                        await pc.setLocalDescription(offer);
+                        socket.emit('group_signal', {
+                            to: peerId,
+                            data: { offer: offer }
+                        });
+                    } catch (e) {
+                        console.warn('[Camera] Renegotiation note:', e);
+                    }
                 }
             }
 
@@ -1732,7 +1771,8 @@ function updateGroupOnlineCount() {
 
 function updateLiveGridLayout() {
     if (!groupParticipantsGrid) return;
-    const totalCards = groupPeers.size + 1;
+    const cards = groupParticipantsGrid.querySelectorAll('.participant-card');
+    const totalCards = cards.length || (groupPeers.size + 1);
     if (totalCards <= 1) {
         groupParticipantsGrid.className = 'live-grid layout-1';
     } else if (totalCards === 2) {
@@ -1854,6 +1894,8 @@ function cleanupGroupMedia() {
         }
     }
     groupPeers.clear();
+    groupPendingConnections.clear();
+    groupQueuedCandidates.clear();
 }
 
 
@@ -2009,67 +2051,117 @@ const CURATED_GIFS = {
         'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
         'https://media.giphy.com/media/DhstvI3CH0EGtQ80IL/giphy.gif',
         'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif',
-        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif'
+        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif',
+        'https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif',
+        'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif'
     ],
     laugh: [
         'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif',
         'https://media.giphy.com/media/10JhviFuU2gWS6W/giphy.gif',
         'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif',
-        'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif'
+        'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif',
+        'https://media.giphy.com/media/3o7TKMt1VVNkHV2PaE/giphy.gif',
+        'https://media.giphy.com/media/9MFsKQ8A6HCN2/giphy.gif'
     ],
     dance: [
         'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif',
         'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif',
-        'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif',
-        'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif'
+        'https://media.giphy.com/media/kuqMAJaK9GK64/giphy.gif',
+        'https://media.giphy.com/media/14qb1Uhf40ndy8/giphy.gif',
+        'https://media.giphy.com/media/l0amJbM1KxJAaqIgg/giphy.gif',
+        'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif'
     ],
     fire: [
         'https://media.giphy.com/media/QMHoU66sBXCAHonOmG/giphy.gif',
-        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif'
+        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif',
+        'https://media.giphy.com/media/3ov9jOJSQhGCthsAn6/giphy.gif',
+        'https://media.giphy.com/media/xT0Gqz4x4eLd5gDms0/giphy.gif',
+        'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif'
     ],
     love: [
         'https://media.giphy.com/media/3oriO04qxVwuM5ZwXY/giphy.gif',
-        'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif'
+        'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
+        'https://media.giphy.com/media/26BRv0ThflsHCqDrG/giphy.gif',
+        'https://media.giphy.com/media/l4pTfx2qLszoacZRS/giphy.gif',
+        'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif'
     ],
     anime: [
         'https://media.giphy.com/media/7kn27lnYSAQ9O/giphy.gif',
-        'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif'
+        'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif',
+        'https://media.giphy.com/media/11vD9bCP2HHN28/giphy.gif',
+        'https://media.giphy.com/media/wkW0maGDN1OBG/giphy.gif',
+        'https://media.giphy.com/media/kd9BlRovbPOykL6YzX/giphy.gif'
     ],
     meme: [
         'https://media.giphy.com/media/QMHoU66sBXCAHonOmG/giphy.gif',
         'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif',
         'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
-        'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif'
+        'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif',
+        'https://media.giphy.com/media/d3mlE7uhX8KFgEmY/giphy.gif',
+        'https://media.giphy.com/media/9b5oSOGDESrCw/giphy.gif'
     ],
     clap: [
         'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif',
-        'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif'
+        'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif',
+        'https://media.giphy.com/media/7rj2ieuN2KSZO/giphy.gif',
+        'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif'
     ],
     wow: [
         'https://media.giphy.com/media/7kn27lnYSAQ9O/giphy.gif',
         'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
-        'https://media.giphy.com/media/DhstvI3CH0EGtQ80IL/giphy.gif'
+        'https://media.giphy.com/media/DhstvI3CH0EGtQ80IL/giphy.gif',
+        'https://media.giphy.com/media/26AHzqU91X3V37BQA/giphy.gif',
+        'https://media.giphy.com/media/l0HlvtIP80nupEFtS/giphy.gif',
+        'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif'
+    ],
+    sad: [
+        'https://media.giphy.com/media/OPU660alU7j2g/giphy.gif',
+        'https://media.giphy.com/media/d2lcHJTG5Tscg/giphy.gif',
+        'https://media.giphy.com/media/L95W4wv8nnb9K/giphy.gif',
+        'https://media.giphy.com/media/2WxWfavuNDiF2/giphy.gif'
     ]
 };
 
 const GIF_METADATA = [
-    { url: 'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif', tags: ['dance', 'party', 'parrot', 'groove', 'trending', 'fun'] },
-    { url: 'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif', tags: ['cat', 'vibing', 'vibe', 'cute', 'meme', 'trending'] },
-    { url: 'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif', tags: ['leonardo', 'dicaprio', 'cheers', 'toast', 'celebrate', 'trending', 'meme', 'wow'] },
-    { url: 'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif', tags: ['laugh', 'lol', 'haha', 'funny', 'joke', 'meme'] },
-    { url: 'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif', tags: ['dance', 'groove', 'cool', 'trending'] },
-    { url: 'https://media.giphy.com/media/QMHoU66sBXCAHonOmG/giphy.gif', tags: ['fire', 'this is fine', 'fine', 'burn', 'flame', 'meme'] },
-    { url: 'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif', tags: ['fire', 'cheers', 'greatsby', 'toast', 'lit'] },
-    { url: 'https://media.giphy.com/media/7kn27lnYSAQ9O/giphy.gif', tags: ['anime', 'wow', 'shocked', 'hype', 'eyes'] },
-    { url: 'https://media.giphy.com/media/DhstvI3CH0EGtQ80IL/giphy.gif', tags: ['thumbs up', 'ok', 'good', 'trending', 'wow', 'hype'] },
-    { url: 'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif', tags: ['laugh', 'smile', 'happy', 'cheers'] },
-    { url: 'https://media.giphy.com/media/10JhviFuU2gWS6W/giphy.gif', tags: ['laugh', 'lol', 'haha', 'giggle'] },
-    { url: 'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif', tags: ['dance', 'happy', 'laugh', 'joy'] },
-    { url: 'https://media.giphy.com/media/3oriO04qxVwuM5ZwXY/giphy.gif', tags: ['love', 'heart', 'hug', 'affection', 'sweet'] },
-    { url: 'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif', tags: ['love', 'hugs', 'cuddle', 'sweet'] },
-    { url: 'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif', tags: ['anime', 'excited', 'energy', 'hype'] },
-    { url: 'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif', tags: ['clap', 'applause', 'bravo', 'congrats'] },
-    { url: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif', tags: ['clap', 'applause', 'respect'] }
+    { url: 'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif', tags: ['dance', 'party', 'parrot', 'groove', 'trending', 'fun', 'music'] },
+    { url: 'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif', tags: ['cat', 'vibing', 'vibe', 'cute', 'meme', 'trending', 'music', 'chill'] },
+    { url: 'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif', tags: ['leonardo', 'dicaprio', 'cheers', 'toast', 'celebrate', 'trending', 'meme', 'wow', 'champagne', 'congrats'] },
+    { url: 'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif', tags: ['laugh', 'lol', 'haha', 'funny', 'joke', 'meme', 'giggle', 'comedy'] },
+    { url: 'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif', tags: ['dance', 'groove', 'cool', 'trending', 'happy', 'party'] },
+    { url: 'https://media.giphy.com/media/QMHoU66sBXCAHonOmG/giphy.gif', tags: ['fire', 'this is fine', 'fine', 'burn', 'flame', 'meme', 'coffee'] },
+    { url: 'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif', tags: ['fire', 'cheers', 'greatsby', 'toast', 'lit', 'party', 'rich'] },
+    { url: 'https://media.giphy.com/media/7kn27lnYSAQ9O/giphy.gif', tags: ['anime', 'wow', 'shocked', 'hype', 'eyes', 'omg', 'surprise'] },
+    { url: 'https://media.giphy.com/media/DhstvI3CH0EGtQ80IL/giphy.gif', tags: ['thumbs up', 'ok', 'good', 'trending', 'wow', 'hype', 'yes', 'approve'] },
+    { url: 'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif', tags: ['laugh', 'smile', 'happy', 'cheers', 'toast', 'friendly'] },
+    { url: 'https://media.giphy.com/media/10JhviFuU2gWS6W/giphy.gif', tags: ['laugh', 'lol', 'haha', 'giggle', 'baby', 'cute'] },
+    { url: 'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif', tags: ['dance', 'happy', 'laugh', 'joy', 'celebration'] },
+    { url: 'https://media.giphy.com/media/3o7TKMt1VVNkHV2PaE/giphy.gif', tags: ['laugh', 'haha', 'dead', 'lmao', 'funny'] },
+    { url: 'https://media.giphy.com/media/9MFsKQ8A6HCN2/giphy.gif', tags: ['laugh', 'hysterical', 'lol', 'wheeze', 'comedy'] },
+    { url: 'https://media.giphy.com/media/kuqMAJaK9GK64/giphy.gif', tags: ['dance', 'carlton', 'fresh prince', 'funny', 'moves'] },
+    { url: 'https://media.giphy.com/media/14qb1Uhf40ndy8/giphy.gif', tags: ['dance', 'snoop dogg', 'hip hop', 'groove', 'cool'] },
+    { url: 'https://media.giphy.com/media/l0amJbM1KxJAaqIgg/giphy.gif', tags: ['dance', 'disco', 'groovy', 'party', 'music'] },
+    { url: 'https://media.giphy.com/media/3ov9jOJSQhGCthsAn6/giphy.gif', tags: ['fire', 'lit', 'explosion', 'boom', 'hot'] },
+    { url: 'https://media.giphy.com/media/xT0Gqz4x4eLd5gDms0/giphy.gif', tags: ['fire', 'flame', 'blaze', 'lit', 'hot'] },
+    { url: 'https://media.giphy.com/media/3oriO04qxVwuM5ZwXY/giphy.gif', tags: ['love', 'heart', 'hug', 'affection', 'sweet', 'hearts'] },
+    { url: 'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif', tags: ['love', 'hugs', 'cuddle', 'sweet', 'warm'] },
+    { url: 'https://media.giphy.com/media/26BRv0ThflsHCqDrG/giphy.gif', tags: ['love', 'heart eyes', 'romantic', 'crush', 'cute'] },
+    { url: 'https://media.giphy.com/media/l4pTfx2qLszoacZRS/giphy.gif', tags: ['love', 'hug', 'hugging', 'friends', 'caring'] },
+    { url: 'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif', tags: ['anime', 'excited', 'energy', 'hype', 'jump'] },
+    { url: 'https://media.giphy.com/media/11vD9bCP2HHN28/giphy.gif', tags: ['anime', 'shocked', 'gasp', 'omg', 'eyes'] },
+    { url: 'https://media.giphy.com/media/wkW0maGDN1OBG/giphy.gif', tags: ['anime', 'dance', 'cute', 'chibi', 'girl'] },
+    { url: 'https://media.giphy.com/media/kd9BlRovbPOykL6YzX/giphy.gif', tags: ['anime', 'spark', 'magical', 'glow', 'point'] },
+    { url: 'https://media.giphy.com/media/d3mlE7uhX8KFgEmY/giphy.gif', tags: ['meme', 'think', 'smart', 'roll safe', 'brain', 'logic'] },
+    { url: 'https://media.giphy.com/media/9b5oSOGDESrCw/giphy.gif', tags: ['meme', 'doge', 'wow', 'dog', 'shiba'] },
+    { url: 'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif', tags: ['clap', 'applause', 'bravo', 'congrats', 'clapping'] },
+    { url: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif', tags: ['clap', 'applause', 'respect', 'slow clap'] },
+    { url: 'https://media.giphy.com/media/7rj2ieuN2KSZO/giphy.gif', tags: ['clap', 'standing ovation', 'cheers', 'bravo'] },
+    { url: 'https://media.giphy.com/media/26AHzqU91X3V37BQA/giphy.gif', tags: ['wow', 'gasp', 'shocked', 'omg', 'surprised'] },
+    { url: 'https://media.giphy.com/media/l0HlvtIP80nupEFtS/giphy.gif', tags: ['wow', 'dramatic', 'shock', 'unbelievable'] },
+    { url: 'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif', tags: ['wow', 'jaw drop', 'speechless', 'shocked'] },
+    { url: 'https://media.giphy.com/media/OPU660alU7j2g/giphy.gif', tags: ['sad', 'cry', 'crying', 'tears', 'cat', 'heartbroken'] },
+    { url: 'https://media.giphy.com/media/d2lcHJTG5Tscg/giphy.gif', tags: ['sad', 'cry', 'rain', 'depressed', 'grief'] },
+    { url: 'https://media.giphy.com/media/L95W4wv8nnb9K/giphy.gif', tags: ['sad', 'tears', 'crying', 'sorrow', 'hurt'] },
+    { url: 'https://media.giphy.com/media/2WxWfavuNDiF2/giphy.gif', tags: ['sad', 'wipe tears', 'weep', 'cry', 'emotional'] }
 ];
 
 let currentGifCategory = 'trending';
@@ -2173,7 +2265,7 @@ if (gifTagsContainer) {
     });
 }
 
-// Instant keyword & tag search in GIF drawer
+// Instant keyword & tag search in GIF drawer with custom image URL support
 if (gifSheetSearch) {
     gifSheetSearch.addEventListener('input', () => {
         const query = gifSheetSearch.value.trim();
@@ -2212,6 +2304,26 @@ function searchGifs(query) {
         return;
     }
 
+    // Direct Image or GIF URL detection: enables sending ANY GIF on the internet!
+    if (/^https?:\/\/.+/i.test(cleanQuery)) {
+        gifSheetGrid.innerHTML = `
+            <div class="custom-gif-url-card" style="grid-column: 1 / -1; display:flex; flex-direction:column; align-items:center; gap:8px; padding:12px; background:rgba(255,255,255,0.05); border-radius:12px; border:1px solid rgba(255,255,255,0.15);">
+                <img src="${cleanQuery}" alt="Preview" style="max-height:120px; border-radius:8px; object-fit:contain;" onerror="this.style.display='none'" />
+                <button type="button" class="btn-primary" style="padding:6px 16px; border-radius:20px; font-weight:700; cursor:pointer;" id="btn-send-custom-url">
+                    <i class="fas fa-paper-plane"></i> Send this GIF / Image
+                </button>
+            </div>
+        `;
+        const btnSend = document.getElementById('btn-send-custom-url');
+        if (btnSend) {
+            btnSend.addEventListener('click', () => {
+                selectAndSendGif(cleanQuery);
+            });
+        }
+        return;
+    }
+
+    // Keyword matching across all tags and categories
     const matched = GIF_METADATA.filter(item => {
         return item.tags.some(t => t.includes(cleanQuery) || cleanQuery.includes(t));
     }).map(i => i.url);
@@ -2219,7 +2331,17 @@ function searchGifs(query) {
     if (matched.length > 0) {
         renderGifsInSheet(matched);
     } else {
-        renderGifsInSheet(CURATED_GIFS.trending);
+        // Fallback: search partial matches or show trending
+        const words = cleanQuery.split(/\s+/);
+        const partialMatches = GIF_METADATA.filter(item => {
+            return words.some(w => item.tags.some(t => t.startsWith(w) || t.includes(w)));
+        }).map(i => i.url);
+
+        if (partialMatches.length > 0) {
+            renderGifsInSheet(partialMatches);
+        } else {
+            renderGifsInSheet(CURATED_GIFS.trending);
+        }
     }
 }
 
