@@ -2283,3 +2283,46 @@ main {
     gap: 0.35rem;
     z-index: 5;
 }
+
+/* ==========================================================================
+   MOBILE PHONE OPTIMIZATIONS (RESPONSIVE TOUCH & LAYOUT)
+   ========================================================================== */
+@media (max-width: 640px) {
+    #group-room-screen.live-room-screen {
+        height: 100dvh;
+        min-height: -webkit-fill-available;
+    }
+    .gif-keyboard-sheet {
+        height: 54vh;
+        max-height: 420px;
+        padding-bottom: env(safe-area-inset-bottom, 15px);
+    }
+    .gif-keyboard-grid {
+        grid-template-columns: repeat(2, 1fr);
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
+    }
+    .gif-item-card {
+        aspect-ratio: 16 / 10;
+        touch-action: manipulation;
+    }
+    .gif-tag-chip {
+        padding: 5px 12px;
+        font-size: 0.75rem;
+        touch-action: manipulation;
+    }
+    .live-top-header {
+        top: max(8px, env(safe-area-inset-top, 8px));
+        left: 8px;
+        right: 8px;
+    }
+    .live-action-bar {
+        bottom: max(10px, env(safe-area-inset-bottom, 10px));
+        left: 8px;
+        right: 8px;
+    }
+    .participant-video {
+        -webkit-transform: translateZ(0);
+        transform: translateZ(0);
+    }
+}

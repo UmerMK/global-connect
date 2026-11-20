@@ -1254,13 +1254,13 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
         }
     }
 
-    // Always pre-negotiate video transceiver if camera not on so video can start without negotiation collision
-    if (!groupVideoStream || !isLocalCameraOn) {
-        try {
-            pc.addTransceiver('video', { direction: 'sendrecv' });
-        } catch (e) {
-            console.warn('[Group] addTransceiver note:', e);
-        }
+    // Video transceiver configuration: use 'sendrecv' only if camera active, otherwise 'recvonly'
+    // This allows phone/mobile devices to connect seamlessly with camera OFF without throwing capture errors!
+    const videoDirection = (groupVideoStream && isLocalCameraOn) ? 'sendrecv' : 'recvonly';
+    try {
+        pc.addTransceiver('video', { direction: videoDirection });
+    } catch (e) {
+        console.warn('[Group] addTransceiver note:', e);
     }
 
     // ICE Candidate generation
@@ -1504,13 +1504,14 @@ async function toggleGroupCamera() {
         // TURN CAMERA ON
         try {
             console.log('[Camera] Requesting webcam video track...');
-            groupVideoStream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    width: { ideal: 640 },
-                    height: { ideal: 480 },
-                    facingMode: 'user'
-                }
-            });
+            try {
+                groupVideoStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user' }
+                });
+            } catch (err1) {
+                console.warn('[Camera] Fallback to basic video constraint:', err1);
+                groupVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            }
 
             isLocalCameraOn = true;
             const videoTrack = groupVideoStream.getVideoTracks()[0];
@@ -1526,11 +1527,16 @@ async function toggleGroupCamera() {
             localCamIndicator.className = 'media-badge cam-on';
             localCamIndicator.innerHTML = '<i class="fas fa-video"></i>';
 
-            // Add/Replace video track on all peer connections
+            // Add/Replace video track on all peer connections and set transceiver to 'sendrecv'
             for (const [peerId, peer] of groupPeers.entries()) {
                 const pc = peer.pc;
+                const transceiver = pc.getTransceivers().find(t => (t.sender && t.sender.track && t.sender.track.kind === 'video') || (t.receiver && t.receiver.track && t.receiver.track.kind === 'video'));
                 const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video') ||
                                pc.getSenders().find(s => !s.track);
+
+                if (transceiver) {
+                    transceiver.direction = 'sendrecv';
+                }
 
                 if (sender) {
                     await sender.replaceTrack(videoTrack);
@@ -1554,7 +1560,7 @@ async function toggleGroupCamera() {
             console.log('[Camera] Camera turned ON successfully');
         } catch (err) {
             console.error('[Camera] Camera activation failed:', err);
-            alert('Could not start camera. Please check camera permissions.');
+            alert('Could not start camera. Please check camera permissions on your phone.');
         }
     } else {
         // TURN CAMERA OFF (Independent hardware release)
@@ -1581,9 +1587,15 @@ async function toggleGroupCamera() {
         localCamIndicator.className = 'media-badge cam-off';
         localCamIndicator.innerHTML = '<i class="fas fa-video-slash"></i>';
 
-        // 4. Remove/replace video track with null on all peers without interrupting audio
+        // 4. Remove/replace video track with null on all peers and set transceiver to 'recvonly'
         for (const [peerId, peer] of groupPeers.entries()) {
-            const sender = peer.pc.getSenders().find(s => s.track && s.track.kind === 'video');
+            const pc = peer.pc;
+            const transceiver = pc.getTransceivers().find(t => (t.sender && t.sender.track && t.sender.track.kind === 'video') || (t.receiver && t.receiver.track && t.receiver.track.kind === 'video'));
+            const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+
+            if (transceiver) {
+                transceiver.direction = 'recvonly';
+            }
             if (sender) {
                 try {
                     await sender.replaceTrack(null);
@@ -1717,7 +1729,7 @@ function createRemoteParticipantCard(memberId, displayName, isOwner, avatarUrl) 
                 <img class="participant-avatar" id="avatar-img-${memberId}" src="${avatarSrc}" alt="${escapeHtml(displayName)}">
                 <div class="speaking-halo"></div>
             </div>
-            <video id="video-${memberId}" class="participant-video hidden" autoplay playsinline></video>
+            <video id="video-${memberId}" class="participant-video hidden" autoplay playsinline webkit-playsinline muted></video>
             <div class="status-overlay">
                 <span id="speaking-pill-${memberId}" class="speaking-pill hidden">Speaking</span>
                 <div class="media-badges">
@@ -2296,7 +2308,7 @@ function loadGifsForCategory(category) {
     renderGifsInSheet(gifs);
 }
 
-function searchGifs(query) {
+async function searchGifs(query) {
     if (!gifSheetGrid) return;
     const cleanQuery = query.toLowerCase().trim();
     if (!cleanQuery) {
@@ -2323,7 +2335,23 @@ function searchGifs(query) {
         return;
     }
 
-    // Keyword matching across all tags and categories
+    gifSheetGrid.innerHTML = '<div class="gif-loading-state"><i class="fas fa-spinner fa-spin"></i> Searching GIFs...</div>';
+
+    // 1. Live Internet-Wide GIF search (DuckDuckGo real-time GIF search engine)
+    try {
+        const res = await fetch(`/api/gifs/search?q=${encodeURIComponent(cleanQuery)}`);
+        if (res.ok) {
+            const data = await res.json();
+            if (data.results && data.results.length > 0) {
+                renderGifsInSheet(data.results);
+                return;
+            }
+        }
+    } catch (e) {
+        console.warn('Live GIF search fetch error, falling back to curated library:', e);
+    }
+
+    // 2. Fallback to rich local keyword & tag search across curated GIFs
     const matched = GIF_METADATA.filter(item => {
         return item.tags.some(t => t.includes(cleanQuery) || cleanQuery.includes(t));
     }).map(i => i.url);
@@ -2331,7 +2359,6 @@ function searchGifs(query) {
     if (matched.length > 0) {
         renderGifsInSheet(matched);
     } else {
-        // Fallback: search partial matches or show trending
         const words = cleanQuery.split(/\s+/);
         const partialMatches = GIF_METADATA.filter(item => {
             return words.some(w => item.tags.some(t => t.startsWith(w) || t.includes(w)));

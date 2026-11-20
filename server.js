@@ -27,6 +27,47 @@ app.use((req, res, next) => {
 // Serve static files from the 'public' directory
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Real-time GIF search endpoint across the entire motion picture/GIF web
+app.get('/api/gifs/search', async (req, res) => {
+    const q = req.query.q;
+    if (!q || !q.trim()) {
+        return res.json({ success: true, results: [] });
+    }
+
+    try {
+        const queryTerm = q.trim();
+        const initialRes = await fetch(`https://duckduckgo.com/?q=${encodeURIComponent(queryTerm + ' gif')}`, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+        const html = await initialRes.text();
+        const match = html.match(/vqd=['"]([\d-]+)['"]/) || html.match(/vqd=([\d-]+)[&'"]/);
+        if (!match) {
+            return res.json({ success: true, results: [] });
+        }
+
+        const vqd = match[1];
+        const apiRes = await fetch(`https://duckduckgo.com/i.js?q=${encodeURIComponent(queryTerm + ' gif')}&o=json&vqd=${vqd}&f=type:gif`, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://duckduckgo.com/'
+            }
+        });
+
+        const data = await apiRes.json();
+        const gifUrls = (data.results || [])
+            .map(r => r.image)
+            .filter(u => u && (u.includes('.gif') || u.includes('tenor') || u.includes('giphy')))
+            .slice(0, 24);
+
+        res.json({ success: true, results: gifUrls });
+    } catch (err) {
+        console.warn('[GIF Search API error]:', err.message);
+        res.json({ success: false, results: [] });
+    }
+});
+
 let waitingUsers = [];
 let onlineCount = 0;
 
