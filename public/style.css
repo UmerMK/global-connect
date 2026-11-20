@@ -1787,3 +1787,91 @@ main {
     color: #0f172a;
     border-color: var(--primary-color);
 }
+
+
+/* ==========================================================================
+   1-ON-1 PRIVATE CHAT OPTIONAL VIDEO STYLES
+   ========================================================================== */
+
+.cam-toggle-btn {
+    color: var(--text-muted);
+}
+
+.cam-toggle-btn.active {
+    color: var(--primary-color) !important;
+    background: rgba(56, 189, 248, 0.2) !important;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.4) !important;
+}
+
+.private-video-stage {
+    position: relative;
+    width: calc(100% - 1.5rem);
+    margin: 0.5rem auto 0 auto;
+    height: 190px;
+    background: #090e17;
+    border-radius: 18px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: stageFadeIn 0.3s ease;
+}
+
+@keyframes stageFadeIn {
+    from {
+        opacity: 0;
+        transform: scale(0.97);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.private-video-stage.hidden {
+    display: none;
+}
+
+.remote-video-feed {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.local-pip-feed {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    width: 65px;
+    height: 85px;
+    border-radius: 10px;
+    object-fit: cover;
+    border: 2px solid var(--primary-color);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+    transform: scaleX(-1);
+    z-index: 10;
+}
+
+.local-pip-feed.hidden {
+    display: none;
+}
+
+.video-overlay-badge {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: #ffffff;
+    background: rgba(15, 23, 42, 0.8);
+    backdrop-filter: blur(8px);
+    padding: 0.2rem 0.5rem;
+    border-radius: 50px;
+    border: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    z-index: 5;
+}

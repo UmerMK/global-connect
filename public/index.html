@@ -222,9 +222,21 @@
                         </div>
                     </div>
                     <div class="call-controls">
+                        <button id="private-cam-btn" class="icon-btn cam-toggle-btn" title="Toggle Video Camera">
+                            <i class="fas fa-video-slash"></i>
+                        </button>
                         <button id="mute-btn" class="icon-btn" title="Mute Microphone">
                             <i class="fas fa-microphone"></i>
                         </button>
+                    </div>
+                </div>
+
+                <!-- Optional Video Stage for 1-on-1 Private Chat -->
+                <div id="private-video-stage" class="private-video-stage hidden">
+                    <video id="private-remote-video" class="remote-video-feed" autoplay playsinline></video>
+                    <video id="private-local-video" class="local-pip-feed hidden" autoplay playsinline muted></video>
+                    <div class="video-overlay-badge" id="video-partner-status">
+                        <i class="fas fa-circle online-mini-dot"></i> Live Video
                     </div>
                 </div>
 

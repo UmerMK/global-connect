@@ -32,6 +32,42 @@ const stopBtn = document.getElementById('stop-btn');
 const cancelWaitingBtn = document.getElementById('cancel-waiting-btn');
 const userCountDisplay = document.getElementById('user-count');
 
+// 1-on-1 Private Video Elements & State
+const privateCamBtn = document.getElementById('private-cam-btn');
+const privateVideoStage = document.getElementById('private-video-stage');
+const privateRemoteVideo = document.getElementById('private-remote-video');
+const privateLocalVideo = document.getElementById('private-local-video');
+let privateLocalVideoStream = null;
+let isPrivateCameraOn = false;
+let isPartnerCameraOn = false;
+
+// Wildly Unpredictable & Funny Auto-Generated Avatar Generator
+function getRandomFunnyAvatar() {
+    const collections = [
+        'fun-emoji',
+        'bottts-neutral',
+        'bottts',
+        'adventurer',
+        'big-smile',
+        'pixel-art',
+        'lorelei',
+        'croodles'
+    ];
+    const quirkyNames = [
+        'CrazyLlama', 'DancingTaco', 'GigglyPanda', 'AtomicSloth',
+        'DiscoDoughnut', 'CrazyAvocado', 'SleepyPenguin', 'NinjaLlama',
+        'FunkyMonkey', 'CosmicDuck', 'CheekyHamster', 'ZippyKoala',
+        'WobblyFrog', 'SpicyPickle', 'MagicTaco', 'BouncingOtter',
+        'GummyBear', 'SuperBanana', 'TurboRabbit', 'HappyCookie'
+    ];
+    const collection = collections[Math.floor(Math.random() * collections.length)];
+    const name = quirkyNames[Math.floor(Math.random() * quirkyNames.length)];
+    const num = Math.floor(Math.random() * 9999);
+    const bgColors = ['b6e3f4', 'c0aede', 'd1d4f9', 'ffd5dc', 'ffdfbf', 'd5f5e3', 'fdebd0'];
+    const bg = bgColors[Math.floor(Math.random() * bgColors.length)];
+    return `https://api.dicebear.com/7.x/${collection}/svg?seed=${name}-${num}&backgroundColor=${bg}`;
+}
+
 // Basic Profanity Filter (English)
 const badWords = ['badword1', 'badword2', 'spam', 'scam']; // Extend as needed
 function containsProfanity(text) {
@@ -262,6 +298,110 @@ messageInput.addEventListener('input', () => {
 });
 
 muteBtn.addEventListener('click', toggleMute);
+if (privateCamBtn) {
+    privateCamBtn.addEventListener('click', togglePrivateCamera);
+}
+
+function updatePrivateVideoStage() {
+    if (!privateVideoStage) return;
+    if (isPrivateCameraOn || isPartnerCameraOn) {
+        privateVideoStage.classList.remove('hidden');
+    } else {
+        privateVideoStage.classList.add('hidden');
+    }
+}
+
+async function togglePrivateCamera() {
+    if (!peerConnection) {
+        alert('Please wait until connected to a partner before starting video.');
+        return;
+    }
+
+    if (!isPrivateCameraOn) {
+        // TURN 1-ON-1 CAMERA ON
+        try {
+            console.log('[1-on-1] Requesting camera for private call...');
+            privateLocalVideoStream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    width: { ideal: 640 },
+                    height: { ideal: 480 },
+                    facingMode: 'user'
+                }
+            });
+
+            isPrivateCameraOn = true;
+            if (privateLocalVideo) {
+                privateLocalVideo.srcObject = privateLocalVideoStream;
+                privateLocalVideo.classList.remove('hidden');
+            }
+
+            if (privateCamBtn) {
+                privateCamBtn.classList.add('active');
+                const camIcon = privateCamBtn.querySelector('i');
+                if (camIcon) camIcon.className = 'fas fa-video';
+            }
+
+            // Attach video track to 1-on-1 RTCPeerConnection
+            const videoTrack = privateLocalVideoStream.getVideoTracks()[0];
+            const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+
+            if (sender) {
+                await sender.replaceTrack(videoTrack);
+            } else {
+                peerConnection.addTrack(videoTrack, privateLocalVideoStream);
+                // Renegotiate with partner
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                socket.emit('signal', { offer });
+            }
+
+            socket.emit('private_camera_toggle', { isCameraOn: true });
+            updatePrivateVideoStage();
+            console.log('[1-on-1] Camera activated successfully');
+        } catch (err) {
+            console.error('[1-on-1] Camera error:', err);
+            alert('Could not start camera. Please verify camera permissions in your browser.');
+        }
+    } else {
+        // TURN 1-ON-1 CAMERA OFF
+        console.log('[1-on-1] Turning camera OFF and releasing webcam hardware...');
+        isPrivateCameraOn = false;
+
+        // Stop hardware track immediately
+        if (privateLocalVideoStream) {
+            privateLocalVideoStream.getTracks().forEach(t => t.stop());
+            privateLocalVideoStream = null;
+        }
+
+        if (privateLocalVideo) {
+            privateLocalVideo.classList.add('hidden');
+            privateLocalVideo.srcObject = null;
+        }
+
+        if (privateCamBtn) {
+            privateCamBtn.classList.remove('active');
+            const camIcon = privateCamBtn.querySelector('i');
+            if (camIcon) camIcon.className = 'fas fa-video-slash';
+        }
+
+        const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (sender) {
+            try {
+                await sender.replaceTrack(null);
+            } catch (e) {}
+        }
+
+        socket.emit('private_camera_toggle', { isCameraOn: false });
+        updatePrivateVideoStage();
+        console.log('[1-on-1] Camera deactivated. Voice continues uninterrupted.');
+    }
+}
+
+socket.on('private_camera_toggle', ({ isCameraOn }) => {
+    console.log('[1-on-1] Partner camera status:', isCameraOn);
+    isPartnerCameraOn = !!isCameraOn;
+    updatePrivateVideoStage();
+});
 
 function endSession() {
     console.log('Ending session and cleaning up resources...');
@@ -277,6 +417,30 @@ function endSession() {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
     }
+
+    // Stop 1-on-1 private camera if active
+    if (privateLocalVideoStream) {
+        privateLocalVideoStream.getTracks().forEach(track => track.stop());
+        privateLocalVideoStream = null;
+    }
+    isPrivateCameraOn = false;
+    isPartnerCameraOn = false;
+    if (privateLocalVideo) {
+        privateLocalVideo.classList.add('hidden');
+        privateLocalVideo.srcObject = null;
+    }
+    if (privateRemoteVideo) {
+        privateRemoteVideo.srcObject = null;
+    }
+    if (privateCamBtn) {
+        privateCamBtn.classList.remove('active');
+        const camIcon = privateCamBtn.querySelector('i');
+        if (camIcon) camIcon.className = 'fas fa-video-slash';
+    }
+    if (privateVideoStage) {
+        privateVideoStage.classList.add('hidden');
+    }
+
     showScreen('start-screen');
     messagesContainer.innerHTML = '';
     currentRoomId = null;
@@ -450,9 +614,9 @@ socket.on('match_found', async (data) => {
     console.log('Match found! Initiator:', data.isInitiator);
     currentRoomId = data.roomId;
 
-    // Set dynamic avatar based on roomId to make it unique per session
+    // Set wildly random and funny profile avatar per session
     if (partnerAvatar) {
-        partnerAvatar.src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${data.roomId}`;
+        partnerAvatar.src = getRandomFunnyAvatar();
     }
 
     showScreen('chat-screen');
@@ -540,21 +704,27 @@ async function initWebRTC(isCaller) {
         };
 
         peerConnection.ontrack = (event) => {
-            console.log('Got remote audio track');
-            // We must take the audio stream from the event and give it to the 'remote-audio' element
-            remoteAudio.srcObject = event.streams[0];
+            console.log('Got remote track in 1-on-1:', event.track.kind);
+            if (event.track.kind === 'audio') {
+                remoteAudio.srcObject = event.streams[0];
+                remoteAudio.play().then(() => {
+                    console.log("Remote audio playing successfully");
+                }).catch(e => {
+                    console.warn("Autoplay blocked or failed:", e);
+                    addMessage("Click anywhere to enable voice.", "system");
+                });
 
-            // Explicitly call play to handle browser autoplay policies
-            remoteAudio.play().then(() => {
-                console.log("Remote audio playing successfully");
-            }).catch(e => {
-                console.warn("Autoplay blocked or failed:", e);
-                addMessage("Click anywhere to enable voice.", "system");
-            });
-
-            callStatus.innerText = 'Connected - Speaking';
-            startTimer();
-            initVisualizers(localStream, event.streams[0]); // Update with remote stream
+                callStatus.innerText = 'Connected - Speaking';
+                startTimer();
+                initVisualizers(localStream, event.streams[0]); // Update with remote stream
+            } else if (event.track.kind === 'video') {
+                if (privateRemoteVideo) {
+                    privateRemoteVideo.srcObject = event.streams[0];
+                    privateRemoteVideo.play().catch(e => console.warn("Remote video play failed:", e));
+                    isPartnerCameraOn = true;
+                    updatePrivateVideoStage();
+                }
+            }
         };
 
         peerConnection.onicecandidateerror = (event) => {
@@ -907,7 +1077,7 @@ function enterGroupRoom(pin, displayName, ownerToken, onComplete) {
         if (roomGroupName) roomGroupName.innerText = currentGroupName;
         if (roomPinDisplay) roomPinDisplay.innerText = currentGroupPin;
         localDisplayName.innerText = `${response.displayName}${response.isOwner ? ' (Host)' : ''}`;
-        localAvatarImg.src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${response.memberId}`;
+        localAvatarImg.src = getRandomFunnyAvatar();
 
         // Owner controls
         if (btnDeleteGroup) {
@@ -1398,7 +1568,7 @@ function createRemoteParticipantCard(memberId, displayName, isOwner) {
     card.innerHTML = `
         <div class="media-wrapper">
             <div class="avatar-display" id="avatar-box-${memberId}">
-                <img class="participant-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=${memberId}" alt="${displayName}">
+                <img class="participant-avatar" src="${getRandomFunnyAvatar()}" alt="${displayName}">
                 <div class="speaking-halo"></div>
             </div>
             <video id="video-${memberId}" class="participant-video hidden" autoplay playsinline></video>

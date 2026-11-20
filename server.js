@@ -110,6 +110,12 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('private_camera_toggle', (data) => {
+        if (socket.peerId) {
+            io.to(socket.peerId).emit('private_camera_toggle', data);
+        }
+    });
+
     socket.on('manual_disconnect', () => {
         waitingUsers = waitingUsers.filter(user => user.id !== socket.id);
         if (socket.peerId) {
