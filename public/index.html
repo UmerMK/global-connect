@@ -231,12 +231,41 @@
                     </div>
                 </div>
 
-                <!-- Optional Video Stage for 1-on-1 Private Chat -->
+                <!-- TikTok Live Style Dual Split-Screen Video Stage for 1-on-1 Private Chat -->
                 <div id="private-video-stage" class="private-video-stage hidden">
-                    <video id="private-remote-video" class="remote-video-feed" autoplay playsinline></video>
-                    <video id="private-local-video" class="local-pip-feed hidden" autoplay playsinline muted></video>
-                    <div class="video-overlay-badge" id="video-partner-status">
-                        <i class="fas fa-circle online-mini-dot"></i> Live Video
+                    <!-- Partner / Remote Pane -->
+                    <div class="split-video-pane remote-pane" id="private-remote-pane">
+                        <video id="private-remote-video" class="split-video-feed hidden" autoplay playsinline webkit-playsinline></video>
+                        <div id="private-remote-placeholder" class="video-placeholder-view">
+                            <div class="placeholder-avatar-ring">
+                                <img id="split-partner-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=Stranger" alt="Partner">
+                            </div>
+                            <span class="placeholder-label" id="split-partner-name">Partner</span>
+                            <span class="placeholder-status"><i class="fas fa-video-slash"></i> Camera Off</span>
+                        </div>
+                        <div class="video-overlay-badge top-left">
+                            <i class="fas fa-circle online-mini-dot"></i> <span id="split-remote-tag">Partner</span>
+                        </div>
+                    </div>
+
+                    <!-- User / Local Pane -->
+                    <div class="split-video-pane local-pane" id="private-local-pane">
+                        <video id="private-local-video" class="split-video-feed hidden" autoplay playsinline webkit-playsinline muted></video>
+                        <div id="private-local-placeholder" class="video-placeholder-view">
+                            <div class="placeholder-avatar-ring">
+                                <img id="split-local-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=You" alt="You">
+                            </div>
+                            <span class="placeholder-label">You</span>
+                            <span class="placeholder-status"><i class="fas fa-video-slash"></i> Camera Off</span>
+                        </div>
+                        <div class="video-overlay-badge top-left">
+                            <i class="fas fa-user"></i> You
+                        </div>
+                    </div>
+
+                    <!-- Split Center Divider Badge -->
+                    <div class="split-center-divider">
+                        <span class="live-pill"><i class="fas fa-bolt"></i> LIVE</span>
                     </div>
                 </div>
 

@@ -38,8 +38,10 @@ const privateVideoStage = document.getElementById('private-video-stage');
 const privateRemoteVideo = document.getElementById('private-remote-video');
 const privateLocalVideo = document.getElementById('private-local-video');
 let privateLocalVideoStream = null;
+let privateRemoteVideoStream = null;
 let isPrivateCameraOn = false;
 let isPartnerCameraOn = false;
+const groupMemberNames = new Map();
 
 // Wildly Unpredictable & Funny Auto-Generated Avatar Generator
 function getRandomFunnyAvatar() {
@@ -314,9 +316,56 @@ if (privateCamBtn) {
 
 function updatePrivateVideoStage() {
     if (!privateVideoStage) return;
-    if (isPrivateCameraOn || isPartnerCameraOn) {
+    const chatScreen = document.getElementById('chat-screen');
+    const remoteVideo = document.getElementById('private-remote-video');
+    const remotePlaceholder = document.getElementById('private-remote-placeholder');
+    const localVideo = document.getElementById('private-local-video');
+    const localPlaceholder = document.getElementById('private-local-placeholder');
+    const partnerAvatarImg = document.getElementById('split-partner-avatar');
+    const partnerAvatarMain = document.getElementById('partner-avatar');
+
+    if (partnerAvatarImg && partnerAvatarMain && partnerAvatarMain.src) {
+        partnerAvatarImg.src = partnerAvatarMain.src;
+    }
+
+    const isAnyVideoActive = isPrivateCameraOn || isPartnerCameraOn;
+
+    if (isAnyVideoActive) {
+        if (chatScreen) chatScreen.classList.add('video-active');
         privateVideoStage.classList.remove('hidden');
+
+        // Local Split Pane
+        if (isPrivateCameraOn && privateLocalVideoStream) {
+            if (localVideo) {
+                localVideo.srcObject = privateLocalVideoStream;
+                localVideo.classList.remove('hidden');
+                localVideo.play().catch(e => {});
+            }
+            if (localPlaceholder) localPlaceholder.classList.add('hidden');
+        } else {
+            if (localVideo) {
+                localVideo.classList.add('hidden');
+                localVideo.srcObject = null;
+            }
+            if (localPlaceholder) localPlaceholder.classList.remove('hidden');
+        }
+
+        // Remote Split Pane
+        if (isPartnerCameraOn && privateRemoteVideoStream) {
+            if (remoteVideo) {
+                remoteVideo.srcObject = privateRemoteVideoStream;
+                remoteVideo.classList.remove('hidden');
+                remoteVideo.play().catch(e => console.warn('Remote video play blocked:', e));
+            }
+            if (remotePlaceholder) remotePlaceholder.classList.add('hidden');
+        } else {
+            if (remoteVideo) {
+                remoteVideo.classList.add('hidden');
+            }
+            if (remotePlaceholder) remotePlaceholder.classList.remove('hidden');
+        }
     } else {
+        if (chatScreen) chatScreen.classList.remove('video-active');
         privateVideoStage.classList.add('hidden');
     }
 }
@@ -331,38 +380,47 @@ async function togglePrivateCamera() {
         // TURN 1-ON-1 CAMERA ON
         try {
             console.log('[1-on-1] Requesting camera for private call...');
-            privateLocalVideoStream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    width: { ideal: 640 },
-                    height: { ideal: 480 },
-                    facingMode: 'user'
-                }
-            });
-
-            isPrivateCameraOn = true;
-            if (privateLocalVideo) {
-                privateLocalVideo.srcObject = privateLocalVideoStream;
-                privateLocalVideo.classList.remove('hidden');
+            try {
+                privateLocalVideoStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
+                });
+            } catch (err1) {
+                privateLocalVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
             }
 
+            isPrivateCameraOn = true;
             if (privateCamBtn) {
                 privateCamBtn.classList.add('active');
                 const camIcon = privateCamBtn.querySelector('i');
                 if (camIcon) camIcon.className = 'fas fa-video';
             }
 
-            // Attach video track to 1-on-1 RTCPeerConnection
+            // Attach video track to 1-on-1 RTCPeerConnection and elevate transceiver to sendrecv
             const videoTrack = privateLocalVideoStream.getVideoTracks()[0];
-            const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+            const transceiver = peerConnection.getTransceivers().find(t => 
+                (t.sender && t.sender.track && t.sender.track.kind === 'video') ||
+                (t.receiver && t.receiver.track && t.receiver.track.kind === 'video')
+            );
+            if (transceiver) {
+                transceiver.direction = 'sendrecv';
+            }
 
+            const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video') ||
+                           peerConnection.getSenders().find(s => !s.track);
             if (sender) {
                 await sender.replaceTrack(videoTrack);
             } else {
                 peerConnection.addTrack(videoTrack, privateLocalVideoStream);
-                // Renegotiate with partner
+            }
+
+            // Renegotiate with partner so their browser decodes the new video track
+            try {
                 const offer = await peerConnection.createOffer();
                 await peerConnection.setLocalDescription(offer);
                 socket.emit('signal', { offer });
+                console.log('[1-on-1] Renegotiation offer sent to partner');
+            } catch (renegErr) {
+                console.warn('[1-on-1] Renegotiation offer error:', renegErr);
             }
 
             socket.emit('private_camera_toggle', { isCameraOn: true });
@@ -383,15 +441,18 @@ async function togglePrivateCamera() {
             privateLocalVideoStream = null;
         }
 
-        if (privateLocalVideo) {
-            privateLocalVideo.classList.add('hidden');
-            privateLocalVideo.srcObject = null;
-        }
-
         if (privateCamBtn) {
             privateCamBtn.classList.remove('active');
             const camIcon = privateCamBtn.querySelector('i');
             if (camIcon) camIcon.className = 'fas fa-video-slash';
+        }
+
+        const transceiver = peerConnection.getTransceivers().find(t => 
+            (t.sender && t.sender.track && t.sender.track.kind === 'video') ||
+            (t.receiver && t.receiver.track && t.receiver.track.kind === 'video')
+        );
+        if (transceiver) {
+            transceiver.direction = 'recvonly';
         }
 
         const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
@@ -399,6 +460,15 @@ async function togglePrivateCamera() {
             try {
                 await sender.replaceTrack(null);
             } catch (e) {}
+        }
+
+        try {
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            socket.emit('signal', { offer });
+            console.log('[1-on-1] Renegotiation (camera off) offer sent');
+        } catch (renegErr) {
+            console.warn('[1-on-1] Camera off renegotiation error:', renegErr);
         }
 
         socket.emit('private_camera_toggle', { isCameraOn: false });
@@ -433,6 +503,7 @@ function endSession() {
         privateLocalVideoStream.getTracks().forEach(track => track.stop());
         privateLocalVideoStream = null;
     }
+    privateRemoteVideoStream = null;
     isPrivateCameraOn = false;
     isPartnerCameraOn = false;
     if (privateLocalVideo) {
@@ -440,6 +511,7 @@ function endSession() {
         privateLocalVideo.srcObject = null;
     }
     if (privateRemoteVideo) {
+        privateRemoteVideo.classList.add('hidden');
         privateRemoteVideo.srcObject = null;
     }
     if (privateCamBtn) {
@@ -449,6 +521,10 @@ function endSession() {
     }
     if (privateVideoStage) {
         privateVideoStage.classList.add('hidden');
+    }
+    const chatScreenEl = document.getElementById('chat-screen');
+    if (chatScreenEl) {
+        chatScreenEl.classList.remove('video-active');
     }
 
     showScreen('start-screen');
@@ -728,12 +804,32 @@ async function initWebRTC(isCaller) {
                 startTimer();
                 initVisualizers(localStream, event.streams[0]); // Update with remote stream
             } else if (event.track.kind === 'video') {
+                const stream = event.streams[0] || new MediaStream([event.track]);
+                privateRemoteVideoStream = stream;
+                isPartnerCameraOn = true;
                 if (privateRemoteVideo) {
-                    privateRemoteVideo.srcObject = event.streams[0];
+                    privateRemoteVideo.srcObject = stream;
                     privateRemoteVideo.play().catch(e => console.warn("Remote video play failed:", e));
-                    isPartnerCameraOn = true;
-                    updatePrivateVideoStage();
                 }
+                updatePrivateVideoStage();
+
+                event.track.onunmute = () => {
+                    console.log('[1-on-1] Partner video track unmuted');
+                    privateRemoteVideoStream = stream;
+                    isPartnerCameraOn = true;
+                    if (privateRemoteVideo) {
+                        privateRemoteVideo.srcObject = stream;
+                        privateRemoteVideo.play().catch(e => {});
+                    }
+                    updatePrivateVideoStage();
+                };
+
+                event.track.onended = () => {
+                    console.log('[1-on-1] Partner video track ended');
+                    isPartnerCameraOn = false;
+                    privateRemoteVideoStream = null;
+                    updatePrivateVideoStage();
+                };
             }
         };
 
@@ -1190,9 +1286,18 @@ async function initGroupVoiceRoom(existingMembers) {
     // 2. Establish WebRTC connection with all existing members in room
     if (Array.isArray(existingMembers)) {
         for (const member of existingMembers) {
+            groupMemberNames.set(member.memberId, member.displayName);
             const stableAvatar = getStableAvatarForUser(member.memberId, member.avatarUrl);
             createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, stableAvatar);
-            await createGroupPeerConnection(member.memberId, member.displayName, true);
+            const peer = await createGroupPeerConnection(member.memberId, member.displayName, true, member.isCameraOn);
+            if (peer && member.isCameraOn) {
+                peer.isCameraOn = true;
+                const camBadge = document.getElementById(`cam-badge-${member.memberId}`);
+                if (camBadge) {
+                    camBadge.className = 'media-badge cam-on';
+                    camBadge.innerHTML = '<i class="fas fa-video"></i>';
+                }
+            }
         }
     }
 
@@ -1201,7 +1306,7 @@ async function initGroupVoiceRoom(existingMembers) {
 }
 
 // Create RTCPeerConnection for a specific remote peer in the group
-async function createGroupPeerConnection(targetMemberId, targetDisplayName, isInitiator) {
+async function createGroupPeerConnection(targetMemberId, targetDisplayName, isInitiator, initialCameraOn = false) {
     if (groupPeers.has(targetMemberId)) {
         console.log(`[Group] Peer ${targetMemberId} already exists`);
         return groupPeers.get(targetMemberId);
@@ -1232,7 +1337,7 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
         displayName: targetDisplayName,
         audioElement: remoteAudioEl,
         videoStream: null,
-        isCameraOn: false,
+        isCameraOn: !!initialCameraOn,
         isAudioMuted: false
     };
 
@@ -1290,30 +1395,43 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
 
             if (currentPeer) {
                 currentPeer.videoStream = streamToPlay;
+                currentPeer.isCameraOn = true;
             }
 
             if (cardVideoEl) {
                 cardVideoEl.srcObject = streamToPlay;
-                if (currentPeer && currentPeer.isCameraOn) {
+                cardVideoEl.classList.remove('hidden');
+                if (avatarBox) avatarBox.classList.add('hidden');
+                if (camBadge) {
+                    camBadge.className = 'media-badge cam-on';
+                    camBadge.innerHTML = '<i class="fas fa-video"></i>';
+                }
+                cardVideoEl.play().catch(e => console.warn('Remote video play blocked:', e));
+            }
+
+            event.track.onunmute = () => {
+                console.log(`[Group] Track unmuted for ${targetMemberId}`);
+                if (currentPeer) currentPeer.isCameraOn = true;
+                if (cardVideoEl) {
+                    cardVideoEl.srcObject = streamToPlay;
                     cardVideoEl.classList.remove('hidden');
                     if (avatarBox) avatarBox.classList.add('hidden');
                     if (camBadge) {
                         camBadge.className = 'media-badge cam-on';
                         camBadge.innerHTML = '<i class="fas fa-video"></i>';
                     }
-                    cardVideoEl.play().catch(e => console.warn('Remote video play blocked:', e));
+                    cardVideoEl.play().catch(e => {});
                 }
-            }
+            };
 
-            event.track.onunmute = () => {
-                console.log(`[Group] Track unmuted for ${targetMemberId}`);
-                if (cardVideoEl) {
-                    cardVideoEl.srcObject = streamToPlay;
-                    if (currentPeer && currentPeer.isCameraOn) {
-                        cardVideoEl.classList.remove('hidden');
-                        if (avatarBox) avatarBox.classList.add('hidden');
-                        cardVideoEl.play().catch(e => {});
-                    }
+            event.track.onended = () => {
+                console.log(`[Group] Track ended for ${targetMemberId}`);
+                if (currentPeer) currentPeer.isCameraOn = false;
+                if (cardVideoEl) cardVideoEl.classList.add('hidden');
+                if (avatarBox) avatarBox.classList.remove('hidden');
+                if (camBadge) {
+                    camBadge.className = 'media-badge cam-off';
+                    camBadge.innerHTML = '<i class="fas fa-video-slash"></i>';
                 }
             };
         }
@@ -1348,8 +1466,9 @@ socket.on('group_signal', async ({ from, data }) => {
             peer = await groupPendingConnections.get(from);
         } else {
             console.log(`[Group] Incoming signal from new peer ${from}`);
-            createRemoteParticipantCard(from, 'Friend', false, getStableAvatarForUser(from));
-            const connPromise = createGroupPeerConnection(from, 'Friend', false);
+            const peerName = groupMemberNames.get(from) || 'Friend';
+            createRemoteParticipantCard(from, peerName, false, getStableAvatarForUser(from));
+            const connPromise = createGroupPeerConnection(from, peerName, false);
             groupPendingConnections.set(from, connPromise);
             peer = await connPromise;
             groupPendingConnections.delete(from);
@@ -1362,6 +1481,22 @@ socket.on('group_signal', async ({ from, data }) => {
     try {
         if (data.offer) {
             console.log(`[Group] Received offer from ${from}`);
+
+            // WebRTC Perfect Negotiation / Glare collision handling
+            if (pc.signalingState !== 'stable') {
+                console.log(`[Group] Signaling state is ${pc.signalingState} upon offer from ${from}`);
+                if (pc.signalingState === 'have-local-offer') {
+                    const isPolite = (socket.id || '') < from;
+                    if (isPolite) {
+                        console.log(`[Group] Polite peer yielding, rolling back offer`);
+                        await pc.setLocalDescription({ type: 'rollback' });
+                    } else {
+                        console.log(`[Group] Impolite peer ignoring collision offer`);
+                        return;
+                    }
+                }
+            }
+
             await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
 
             // Drain queued ICE candidates
@@ -1381,6 +1516,7 @@ socket.on('group_signal', async ({ from, data }) => {
                 to: from,
                 data: { answer: answer }
             });
+            console.log(`[Group] Sent answer to ${from}`);
         } else if (data.answer) {
             console.log(`[Group] Received answer from ${from}`);
             await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
@@ -1414,6 +1550,7 @@ socket.on('group_signal', async ({ from, data }) => {
 // A new member joined the group room
 socket.on('group_member_joined', async (member) => {
     console.log(`[Group] New member joined: ${member.displayName} (${member.memberId})`);
+    groupMemberNames.set(member.memberId, member.displayName);
     const stableAvatar = getStableAvatarForUser(member.memberId, member.avatarUrl);
     createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, stableAvatar);
     updateGroupOnlineCount();
@@ -1527,7 +1664,7 @@ async function toggleGroupCamera() {
             localCamIndicator.className = 'media-badge cam-on';
             localCamIndicator.innerHTML = '<i class="fas fa-video"></i>';
 
-            // Add/Replace video track on all peer connections and set transceiver to 'sendrecv'
+            // Add/Replace video track on all peer connections, set transceiver to 'sendrecv', and renegotiate
             for (const [peerId, peer] of groupPeers.entries()) {
                 const pc = peer.pc;
                 const transceiver = pc.getTransceivers().find(t => (t.sender && t.sender.track && t.sender.track.kind === 'video') || (t.receiver && t.receiver.track && t.receiver.track.kind === 'video'));
@@ -1542,16 +1679,19 @@ async function toggleGroupCamera() {
                     await sender.replaceTrack(videoTrack);
                 } else {
                     pc.addTrack(videoTrack, groupVideoStream);
-                    try {
-                        const offer = await pc.createOffer();
-                        await pc.setLocalDescription(offer);
-                        socket.emit('group_signal', {
-                            to: peerId,
-                            data: { offer: offer }
-                        });
-                    } catch (e) {
-                        console.warn('[Camera] Renegotiation note:', e);
-                    }
+                }
+
+                // ALWAYS renegotiate with this peer so their phone receives the new video track
+                try {
+                    const offer = await pc.createOffer();
+                    await pc.setLocalDescription(offer);
+                    socket.emit('group_signal', {
+                        to: peerId,
+                        data: { offer: offer }
+                    });
+                    console.log(`[Camera] Renegotiation offer sent to ${peerId}`);
+                } catch (e) {
+                    console.warn(`[Camera] Renegotiation note for ${peerId}:`, e);
                 }
             }
 
@@ -1587,7 +1727,7 @@ async function toggleGroupCamera() {
         localCamIndicator.className = 'media-badge cam-off';
         localCamIndicator.innerHTML = '<i class="fas fa-video-slash"></i>';
 
-        // 4. Remove/replace video track with null on all peers and set transceiver to 'recvonly'
+        // 4. Remove/replace video track with null on all peers, set transceiver to 'recvonly', and renegotiate
         for (const [peerId, peer] of groupPeers.entries()) {
             const pc = peer.pc;
             const transceiver = pc.getTransceivers().find(t => (t.sender && t.sender.track && t.sender.track.kind === 'video') || (t.receiver && t.receiver.track && t.receiver.track.kind === 'video'));
@@ -1602,6 +1742,18 @@ async function toggleGroupCamera() {
                 } catch (e) {
                     console.warn('[Camera] Error setting replaceTrack null:', e);
                 }
+            }
+
+            try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                socket.emit('group_signal', {
+                    to: peerId,
+                    data: { offer: offer }
+                });
+                console.log(`[Camera] Renegotiation (camera off) offer sent to ${peerId}`);
+            } catch (e) {
+                console.warn(`[Camera] Renegotiation error for ${peerId}:`, e);
             }
         }
 
