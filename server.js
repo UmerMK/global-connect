@@ -153,7 +153,7 @@ io.on('connection', (socket) => {
     });
 
     // Join room with PIN and Display Name (no group name needed!)
-    socket.on('group_join', ({ pin, displayName, ownerToken }, callback) => {
+    socket.on('group_join', ({ pin, displayName, ownerToken, avatarUrl }, callback) => {
         const verification = groupsManager.verifyGroup(pin);
 
         if (!verification.success) {
@@ -191,11 +191,13 @@ io.on('connection', (socket) => {
         const isOwner = groupsManager.isOwner(groupPin, ownerToken);
         const memberId = socket.id;
         const cleanName = (displayName && displayName.trim().slice(0, 30)) || `Friend ${socket.id.slice(0, 4)}`;
+        const cleanAvatar = avatarUrl || null;
 
         socket.groupPin = groupPin;
         socket.groupName = groupName;
         socket.memberId = memberId;
         socket.displayName = cleanName;
+        socket.userAvatar = cleanAvatar;
         socket.isGroupOwner = isOwner;
         socket.isCameraOn = false;
         socket.isAudioMuted = false;
@@ -213,6 +215,7 @@ io.on('connection', (socket) => {
                     existingMembers.push({
                         memberId: s.memberId,
                         displayName: s.displayName,
+                        avatarUrl: s.userAvatar,
                         isOwner: s.isGroupOwner,
                         isCameraOn: !!s.isCameraOn,
                         isAudioMuted: !!s.isAudioMuted
@@ -229,6 +232,7 @@ io.on('connection', (socket) => {
                 isOwner: isOwner,
                 memberId: memberId,
                 displayName: cleanName,
+                avatarUrl: cleanAvatar,
                 existingMembers: existingMembers
             });
         }
@@ -237,6 +241,7 @@ io.on('connection', (socket) => {
         socket.to(socketRoom).emit('group_member_joined', {
             memberId: memberId,
             displayName: cleanName,
+            avatarUrl: cleanAvatar,
             isOwner: isOwner,
             isCameraOn: false,
             isAudioMuted: false
@@ -279,6 +284,22 @@ io.on('connection', (socket) => {
         });
     });
 
+    // Live transparent chat stream (TikTok live style messages & GIFs)
+    socket.on('group_chat_message', ({ text, gifUrl }, callback) => {
+        if (!socket.groupPin) return;
+        const socketRoom = `group_${socket.groupPin}`;
+        const payload = {
+            id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+            senderId: socket.id,
+            senderName: socket.displayName || 'Friend',
+            text: text ? String(text).slice(0, 200) : '',
+            gifUrl: gifUrl || null,
+            timestamp: Date.now()
+        };
+        io.to(socketRoom).emit('group_chat_message', payload);
+        if (typeof callback === 'function') callback({ success: true, payload });
+    });
+
     // ==========================================
     // 3. DISAPPEARING IMAGE & GIF SHARING
     // ==========================================
@@ -313,13 +334,14 @@ io.on('connection', (socket) => {
     });
 
     // Delete group (owner only)
-    socket.on('group_delete', ({ pin, ownerToken }, callback) => {
-        const result = groupsManager.deleteGroup(pin, ownerToken);
+    socket.on('group_delete', ({ pin, name, ownerToken }, callback) => {
+        const targetPin = pin || socket.groupPin;
+        const result = groupsManager.deleteGroup(targetPin, ownerToken);
         if (result.success) {
-            console.log(`[Group] Room PIN "${pin}" permanently deleted by owner.`);
-            const socketRoom = `group_${pin}`;
+            console.log(`[Group] Room PIN "${targetPin}" permanently deleted by owner.`);
+            const socketRoom = `group_${targetPin}`;
             io.to(socketRoom).emit('group_deleted', {
-                message: `The group room (PIN: ${pin}) has been deleted by its owner.`
+                message: `The group room has been deleted by its owner.`
             });
 
             const roomSockets = io.sockets.adapter.rooms.get(socketRoom) || new Set();

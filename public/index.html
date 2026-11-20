@@ -341,32 +341,41 @@
             <!-- ============================================== -->
             <!-- GROUP VOICE & VIDEO ROOM SCREEN                -->
             <!-- ============================================== -->
-            <div id="group-room-screen" class="screen hidden">
-                <!-- Group Header -->
-                <div class="group-room-header">
-                    <div class="group-header-info">
-                        <h3 id="room-group-name">Group Room</h3>
-                        <span class="group-room-status-sub"><i class="fas fa-circle online-mini-dot"></i> PIN: <strong id="room-pin-display">1234</strong></span>
+            <!-- GROUP TIKTOK LIVE STAGE & REAL-TIME EXPERIENCE -->
+            <!-- ============================================== -->
+            <div id="group-room-screen" class="screen live-room-screen hidden">
+                <!-- Floating Top Header Bar -->
+                <div class="live-top-header">
+                    <div class="live-header-left">
+                        <span class="live-pill-badge"><i class="fas fa-satellite-dish pulse-icon"></i> LIVE</span>
+                        <div class="live-title-box">
+                            <h3 id="room-group-name">Group Room</h3>
+                            <span class="live-pin-chip" title="Room PIN"><i class="fas fa-lock"></i> PIN: <strong id="room-pin-display">1234</strong></span>
+                        </div>
                     </div>
-                    <div class="group-header-actions">
+                    <div class="live-header-right">
+                        <div class="live-viewers-chip" title="Connected in Room">
+                            <i class="fas fa-user-friends"></i>
+                            <span id="group-online-count">1</span>
+                        </div>
                         <button id="btn-delete-group" class="danger-btn-mini hidden" title="Delete Group (Owner Only)">
                             <i class="fas fa-trash-alt"></i> Delete
                         </button>
-                        <button id="btn-leave-group" class="secondary-btn-mini" title="Leave Group">
+                        <button id="btn-leave-group" class="live-leave-pill-btn" title="Leave Group">
                             <i class="fas fa-sign-out-alt"></i> Leave
                         </button>
                     </div>
                 </div>
 
-                <!-- Participants Grid (Responsive Voice & Video Grid) -->
-                <div class="group-participants-container">
-                    <div id="group-participants-grid" class="participants-grid">
+                <!-- Full-Bleed Split Video Stage -->
+                <div class="live-stage-viewport">
+                    <div id="group-participants-grid" class="live-grid layout-1">
                         <!-- Local participant card (You) -->
                         <div class="participant-card local-card" id="card-local">
                             <div class="media-wrapper">
                                 <!-- Avatar view when camera is OFF -->
                                 <div class="avatar-display" id="local-avatar-box">
-                                    <img id="local-avatar-img" class="participant-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=You" alt="You">
+                                    <img id="local-avatar-img" class="participant-avatar" src="https://api.dicebear.com/7.x/bottts/svg?seed=You" alt="You">
                                     <div class="speaking-halo" id="local-speaking-halo"></div>
                                 </div>
                                 <!-- Video view when camera is ON -->
@@ -393,31 +402,71 @@
                     </div>
                 </div>
 
-                <!-- Group Control Bar (Floating Glass Bar) -->
-                <div class="group-controls-bar">
-                    <button id="group-mic-btn" class="control-btn" title="Toggle Microphone">
-                        <i class="fas fa-microphone"></i>
-                        <span class="btn-label">Mute</span>
-                    </button>
-
-                    <button id="group-cam-btn" class="control-btn cam-disabled" title="Toggle Camera">
-                        <i class="fas fa-video-slash"></i>
-                        <span class="btn-label">Camera</span>
-                    </button>
-
-                    <button id="group-share-media-btn" class="control-btn share-btn" title="Share Photo or GIF (Disappears)">
-                        <i class="fas fa-photo-film"></i>
-                        <span class="btn-label">Pic/GIF</span>
-                    </button>
-
-                    <div class="group-status-pill">
-                        <i class="fas fa-users"></i>
-                        <span id="group-online-count">1</span>
+                <!-- Floating Transparent Live Chat Stream (TikTok Live comments & GIFs) -->
+                <div id="live-overlay-stream" class="live-stream-overlay">
+                    <div class="live-stream-welcome-bubble">
+                        <i class="fas fa-sparkles"></i> Welcome to the live room! Tap the GIF button or chat below.
                     </div>
+                </div>
 
-                    <button id="group-leave-control-btn" class="control-btn leave-btn" title="Leave Group">
+                <!-- Sliding Keyboard-Style GIF Drawer -->
+                <div id="gif-keyboard-drawer" class="gif-keyboard-sheet">
+                    <div class="gif-sheet-handle-bar">
+                        <span class="gif-sheet-handle"></span>
+                    </div>
+                    <div class="gif-sheet-header">
+                        <div class="gif-search-wrapper">
+                            <i class="fas fa-search"></i>
+                            <input type="text" id="gif-sheet-search" placeholder="Search Tenor GIFs..." autocomplete="off">
+                            <button id="btn-clear-gif-search" class="clear-icon-btn hidden"><i class="fas fa-times-circle"></i></button>
+                        </div>
+                        <button id="btn-close-gif-drawer" class="close-sheet-btn" title="Close"><i class="fas fa-chevron-down"></i></button>
+                    </div>
+                    <!-- Quick Tag Chips -->
+                    <div class="gif-tags-scroll" id="gif-tags-container">
+                        <button class="gif-tag-chip active" data-tag="trending">🔥 Trending</button>
+                        <button class="gif-tag-chip" data-tag="laugh">😂 Laugh</button>
+                        <button class="gif-tag-chip" data-tag="dance">💃 Dance</button>
+                        <button class="gif-tag-chip" data-tag="fire">🔥 Lit</button>
+                        <button class="gif-tag-chip" data-tag="love">❤️ Love</button>
+                        <button class="gif-tag-chip" data-tag="anime">🐱 Anime</button>
+                        <button class="gif-tag-chip" data-tag="meme">🎉 Memes</button>
+                        <button class="gif-tag-chip" data-tag="clap">👏 Clap</button>
+                        <button class="gif-tag-chip" data-tag="wow">🤯 Wow</button>
+                    </div>
+                    <!-- GIF Results Grid -->
+                    <div id="gif-sheet-grid" class="gif-keyboard-grid">
+                        <div class="gif-loading-state"><i class="fas fa-spinner fa-spin"></i> Loading GIFs...</div>
+                    </div>
+                </div>
+
+                <!-- Bottom Floating Live Action Bar -->
+                <div class="live-action-bar">
+                    <form id="live-chat-form" class="live-chat-input-pill" onsubmit="return false;">
+                        <input type="text" id="live-chat-input" placeholder="Say something in live..." autocomplete="off" maxlength="200">
+                        <button type="submit" id="btn-send-live-chat" class="live-send-icon-btn" title="Send comment">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                    </form>
+
+                    <button id="btn-toggle-gif-drawer" class="live-circle-tool-btn gif-trigger" title="Open GIF Keyboard">
+                        <span class="gif-btn-text">GIF</span>
+                    </button>
+
+                    <button id="group-mic-btn" class="live-circle-tool-btn mic-trigger" title="Toggle Microphone">
+                        <i class="fas fa-microphone"></i>
+                    </button>
+
+                    <button id="group-cam-btn" class="live-circle-tool-btn cam-trigger cam-disabled" title="Toggle Camera">
+                        <i class="fas fa-video-slash"></i>
+                    </button>
+
+                    <button id="group-share-media-btn" class="live-circle-tool-btn upload-trigger" title="Share Photo or File">
+                        <i class="fas fa-image"></i>
+                    </button>
+
+                    <button id="group-leave-control-btn" class="live-circle-tool-btn leave-trigger" title="Leave Live Room">
                         <i class="fas fa-phone-slash"></i>
-                        <span class="btn-label">Leave</span>
                     </button>
                 </div>
             </div>

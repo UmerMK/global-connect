@@ -920,6 +920,7 @@ const btnLeaveGroup = document.getElementById('btn-leave-group');
 const groupLeaveControlBtn = document.getElementById('group-leave-control-btn');
 const groupParticipantsGrid = document.getElementById('group-participants-grid');
 const localCard = document.getElementById('card-local');
+const localAvatarBox = document.getElementById('local-avatar-box');
 const localAvatarImg = document.getElementById('local-avatar-img');
 const localVideoPreview = document.getElementById('local-video-preview');
 const localDisplayName = document.getElementById('local-display-name');
@@ -928,6 +929,19 @@ const localCamIndicator = document.getElementById('local-cam-indicator');
 const groupMicBtn = document.getElementById('group-mic-btn');
 const groupCamBtn = document.getElementById('group-cam-btn');
 const groupOnlineCount = document.getElementById('group-online-count');
+
+// Live Stream & Chat Elements
+const liveOverlayStream = document.getElementById('live-overlay-stream');
+const liveChatForm = document.getElementById('live-chat-form');
+const liveChatInput = document.getElementById('live-chat-input');
+const btnToggleGifDrawer = document.getElementById('btn-toggle-gif-drawer');
+const gifKeyboardDrawer = document.getElementById('gif-keyboard-drawer');
+const btnCloseGifDrawer = document.getElementById('btn-close-gif-drawer');
+const gifSheetSearch = document.getElementById('gif-sheet-search');
+const btnClearGifSearch = document.getElementById('btn-clear-gif-search');
+const gifSheetGrid = document.getElementById('gif-sheet-grid');
+const gifTagsContainer = document.getElementById('gif-tags-container');
+let myLocalFunnyAvatar = getRandomFunnyAvatar();
 
 // Disappearing Media Elements
 const groupShareMediaBtn = document.getElementById('group-share-media-btn');
@@ -1058,7 +1072,11 @@ function handleCreateGroup() {
 
 // Helper: Enter group room
 function enterGroupRoom(pin, displayName, ownerToken, onComplete) {
-    socket.emit('group_join', { pin, displayName, ownerToken }, async (response) => {
+    if (!myLocalFunnyAvatar) {
+        myLocalFunnyAvatar = getRandomFunnyAvatar();
+    }
+
+    socket.emit('group_join', { pin, displayName, ownerToken, avatarUrl: myLocalFunnyAvatar }, async (response) => {
         if (typeof onComplete === 'function') onComplete();
 
         if (!response || !response.success) {
@@ -1077,7 +1095,7 @@ function enterGroupRoom(pin, displayName, ownerToken, onComplete) {
         if (roomGroupName) roomGroupName.innerText = currentGroupName;
         if (roomPinDisplay) roomPinDisplay.innerText = currentGroupPin;
         localDisplayName.innerText = `${response.displayName}${response.isOwner ? ' (Host)' : ''}`;
-        localAvatarImg.src = getRandomFunnyAvatar();
+        localAvatarImg.src = myLocalFunnyAvatar;
 
         // Owner controls
         if (btnDeleteGroup) {
@@ -1086,6 +1104,15 @@ function enterGroupRoom(pin, displayName, ownerToken, onComplete) {
             } else {
                 btnDeleteGroup.classList.add('hidden');
             }
+        }
+
+        // Reset live stream overlay with welcome banner
+        if (liveOverlayStream) {
+            liveOverlayStream.innerHTML = `
+                <div class="live-stream-welcome-bubble">
+                    <i class="fas fa-sparkles"></i> Welcome to the live room! Tap the GIF button or chat below.
+                </div>
+            `;
         }
 
         // Switch to Room screen
@@ -1129,7 +1156,7 @@ async function initGroupVoiceRoom(existingMembers) {
     // 2. Establish WebRTC connection with all existing members in room
     if (Array.isArray(existingMembers)) {
         for (const member of existingMembers) {
-            createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner);
+            createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, member.avatarUrl);
             await createGroupPeerConnection(member.memberId, member.displayName, true);
         }
     }
@@ -1156,10 +1183,13 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
     const pc = new RTCPeerConnection(rtcConfig);
 
     // Audio element for remote participant
-    const remoteAudioEl = document.createElement('audio');
-    remoteAudioEl.id = `remote-audio-${targetMemberId}`;
-    remoteAudioEl.autoplay = true;
-    document.body.appendChild(remoteAudioEl);
+    let remoteAudioEl = document.getElementById(`remote-audio-${targetMemberId}`);
+    if (!remoteAudioEl) {
+        remoteAudioEl = document.createElement('audio');
+        remoteAudioEl.id = `remote-audio-${targetMemberId}`;
+        remoteAudioEl.autoplay = true;
+        document.body.appendChild(remoteAudioEl);
+    }
 
     const peerData = {
         pc: pc,
@@ -1174,18 +1204,40 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
 
     groupPeers.set(targetMemberId, peerData);
 
+    // Always pre-negotiate audio and video transceivers so video works seamlessly
+    try {
+        pc.addTransceiver('audio', { direction: 'sendrecv' });
+        pc.addTransceiver('video', { direction: 'sendrecv' });
+    } catch (e) {
+        console.warn('[Group] addTransceiver note:', e);
+    }
+
     // Add local audio tracks if available
     if (groupAudioStream) {
-        groupAudioStream.getAudioTracks().forEach(track => {
-            pc.addTrack(track, groupAudioStream);
-        });
+        const audioTrack = groupAudioStream.getAudioTracks()[0];
+        if (audioTrack) {
+            const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio') ||
+                           pc.getSenders().find(s => !s.track);
+            if (sender) {
+                sender.replaceTrack(audioTrack).catch(e => console.warn('replaceTrack audio:', e));
+            } else {
+                pc.addTrack(audioTrack, groupAudioStream);
+            }
+        }
     }
 
     // Add local video track if camera is currently enabled
     if (groupVideoStream && isLocalCameraOn) {
-        groupVideoStream.getVideoTracks().forEach(track => {
-            pc.addTrack(track, groupVideoStream);
-        });
+        const videoTrack = groupVideoStream.getVideoTracks()[0];
+        if (videoTrack) {
+            const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video') ||
+                           pc.getSenders().find(s => !s.track);
+            if (sender) {
+                sender.replaceTrack(videoTrack).catch(e => console.warn('replaceTrack video:', e));
+            } else {
+                pc.addTrack(videoTrack, groupVideoStream);
+            }
+        }
     }
 
     // ICE Candidate generation
@@ -1202,20 +1254,26 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
     pc.ontrack = (event) => {
         console.log(`[Group] ontrack from ${targetMemberId}: kind=${event.track.kind}`);
         const currentPeer = groupPeers.get(targetMemberId);
-        if (!currentPeer) return;
 
         if (event.track.kind === 'audio') {
-            remoteAudioEl.srcObject = event.streams[0];
+            remoteAudioEl.srcObject = event.streams[0] || new MediaStream([event.track]);
             remoteAudioEl.play().catch(e => console.warn('Remote audio play blocked:', e));
         } else if (event.track.kind === 'video') {
             const cardVideoEl = document.getElementById(`video-${targetMemberId}`);
+            const avatarBox = document.getElementById(`avatar-box-${targetMemberId}`);
+            const camBadge = document.getElementById(`cam-badge-${targetMemberId}`);
+
             if (cardVideoEl) {
-                cardVideoEl.srcObject = event.streams[0];
-                cardVideoEl.play().catch(e => console.warn('Remote video play blocked:', e));
-                if (currentPeer.isCameraOn) {
-                    cardVideoEl.classList.remove('hidden');
+                cardVideoEl.srcObject = event.streams[0] || new MediaStream([event.track]);
+                cardVideoEl.classList.remove('hidden');
+                if (avatarBox) avatarBox.classList.add('hidden');
+                if (camBadge) {
+                    camBadge.className = 'media-badge cam-on';
+                    camBadge.innerHTML = '<i class="fas fa-video"></i>';
                 }
+                cardVideoEl.play().catch(e => console.warn('Remote video play blocked:', e));
             }
+            if (currentPeer) currentPeer.isCameraOn = true;
         }
     };
 
@@ -1285,7 +1343,7 @@ socket.on('group_signal', async ({ from, data }) => {
 // A new member joined the group room
 socket.on('group_member_joined', async (member) => {
     console.log(`[Group] New member joined: ${member.displayName} (${member.memberId})`);
-    createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner);
+    createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, member.avatarUrl);
     updateGroupOnlineCount();
     playSystemSound('connect');
 });
@@ -1315,12 +1373,12 @@ socket.on('group_media_state', ({ memberId, isAudioMuted, isCameraOn }) => {
     if (typeof isCameraOn === 'boolean') {
         peer.isCameraOn = isCameraOn;
         const videoEl = document.getElementById(`video-${memberId}`);
+        const avatarBox = document.getElementById(`avatar-box-${memberId}`);
         const camBadge = document.getElementById(`cam-badge-${memberId}`);
 
         if (isCameraOn) {
-            if (videoEl && videoEl.srcObject) {
-                videoEl.classList.remove('hidden');
-            }
+            if (videoEl) videoEl.classList.remove('hidden');
+            if (avatarBox) avatarBox.classList.add('hidden');
             if (camBadge) {
                 camBadge.className = 'media-badge cam-on';
                 camBadge.innerHTML = '<i class="fas fa-video"></i>';
@@ -1328,7 +1386,9 @@ socket.on('group_media_state', ({ memberId, isAudioMuted, isCameraOn }) => {
         } else {
             if (videoEl) {
                 videoEl.classList.add('hidden');
+                videoEl.srcObject = null;
             }
+            if (avatarBox) avatarBox.classList.remove('hidden');
             if (camBadge) {
                 camBadge.className = 'media-badge cam-off';
                 camBadge.innerHTML = '<i class="fas fa-video-slash"></i>';
@@ -1381,33 +1441,36 @@ async function toggleGroupCamera() {
             // Local Preview
             localVideoPreview.srcObject = groupVideoStream;
             localVideoPreview.classList.remove('hidden');
+            if (localAvatarBox) localAvatarBox.classList.add('hidden');
 
             // Update Local UI
-            groupCamBtn.className = 'control-btn cam-active';
-            groupCamBtn.querySelector('i').className = 'fas fa-video';
+            groupCamBtn.className = 'live-circle-tool-btn cam-trigger cam-active';
+            groupCamBtn.innerHTML = '<i class="fas fa-video"></i>';
             localCamIndicator.className = 'media-badge cam-on';
             localCamIndicator.innerHTML = '<i class="fas fa-video"></i>';
 
             // Add/Replace video track on all peer connections
             for (const [peerId, peer] of groupPeers.entries()) {
                 const pc = peer.pc;
-                const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+                const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video') ||
+                               pc.getSenders().find(s => !s.track);
 
                 if (sender) {
                     await sender.replaceTrack(videoTrack);
                 } else {
                     pc.addTrack(videoTrack, groupVideoStream);
-                    // Renegotiate with peer
-                    try {
-                        const offer = await pc.createOffer();
-                        await pc.setLocalDescription(offer);
-                        socket.emit('group_signal', {
-                            to: peerId,
-                            data: { offer: offer }
-                        });
-                    } catch (e) {
-                        console.error('[Camera] Renegotiation error with', peerId, e);
-                    }
+                }
+
+                // Renegotiate with peer
+                try {
+                    const offer = await pc.createOffer();
+                    await pc.setLocalDescription(offer);
+                    socket.emit('group_signal', {
+                        to: peerId,
+                        data: { offer: offer }
+                    });
+                } catch (e) {
+                    console.error('[Camera] Renegotiation error with', peerId, e);
                 }
             }
 
@@ -1432,13 +1495,14 @@ async function toggleGroupCamera() {
             groupVideoStream = null;
         }
 
-        // 2. Hide local preview
+        // 2. Hide local preview and show avatar
         localVideoPreview.classList.add('hidden');
         localVideoPreview.srcObject = null;
+        if (localAvatarBox) localAvatarBox.classList.remove('hidden');
 
         // 3. Update Local UI
-        groupCamBtn.className = 'control-btn cam-disabled';
-        groupCamBtn.querySelector('i').className = 'fas fa-video-slash';
+        groupCamBtn.className = 'live-circle-tool-btn cam-trigger cam-disabled';
+        groupCamBtn.innerHTML = '<i class="fas fa-video-slash"></i>';
         localCamIndicator.className = 'media-badge cam-off';
         localCamIndicator.innerHTML = '<i class="fas fa-video-slash"></i>';
 
@@ -1478,18 +1542,15 @@ function toggleGroupMic() {
 
     groupMicBtn.classList.toggle('muted', isGroupAudioMuted);
     const micIcon = groupMicBtn.querySelector('i');
-    const micLabel = groupMicBtn.querySelector('.btn-label');
 
     if (isGroupAudioMuted) {
         if (micIcon) micIcon.className = 'fas fa-microphone-slash';
-        if (micLabel) micLabel.innerText = 'Unmute';
         localMicIndicator.className = 'media-badge mic-muted';
         localMicIndicator.innerHTML = '<i class="fas fa-microphone-slash"></i>';
         // When muted, immediately clear speaking state
         setLocalSpeaking(false);
     } else {
         if (micIcon) micIcon.className = 'fas fa-microphone';
-        if (micLabel) micLabel.innerText = 'Mute';
         localMicIndicator.className = 'media-badge mic-on';
         localMicIndicator.innerHTML = '<i class="fas fa-microphone"></i>';
     }
@@ -1556,19 +1617,21 @@ function setLocalSpeaking(speaking) {
 }
 
 // ==========================================
-// 7. PARTICIPANT UI MANAGEMENT
+// 7. PARTICIPANT UI MANAGEMENT & DYNAMIC GRID
 // ==========================================
-function createRemoteParticipantCard(memberId, displayName, isOwner) {
+function createRemoteParticipantCard(memberId, displayName, isOwner, avatarUrl) {
     if (document.getElementById(`card-${memberId}`)) return;
 
     const card = document.createElement('div');
     card.className = 'participant-card';
     card.id = `card-${memberId}`;
 
+    const avatarSrc = avatarUrl || getRandomFunnyAvatar();
+
     card.innerHTML = `
         <div class="media-wrapper">
             <div class="avatar-display" id="avatar-box-${memberId}">
-                <img class="participant-avatar" src="${getRandomFunnyAvatar()}" alt="${displayName}">
+                <img class="participant-avatar" id="avatar-img-${memberId}" src="${avatarSrc}" alt="${escapeHtml(displayName)}">
                 <div class="speaking-halo"></div>
             </div>
             <video id="video-${memberId}" class="participant-video hidden" autoplay playsinline></video>
@@ -1585,11 +1648,12 @@ function createRemoteParticipantCard(memberId, displayName, isOwner) {
             </div>
         </div>
         <div class="participant-meta">
-            <span class="participant-name">${displayName}${isOwner ? ' (Host)' : ''}</span>
+            <span class="participant-name">${escapeHtml(displayName)}${isOwner ? ' (Host)' : ''}</span>
         </div>
     `;
 
     groupParticipantsGrid.appendChild(card);
+    updateLiveGridLayout();
 }
 
 function removeRemoteParticipant(memberId) {
@@ -1611,12 +1675,28 @@ function removeRemoteParticipant(memberId) {
     if (card) {
         card.remove();
     }
+    updateLiveGridLayout();
 }
 
 function updateGroupOnlineCount() {
     const total = groupPeers.size + 1; // peers + self
     if (groupOnlineCount) {
         groupOnlineCount.innerText = total;
+    }
+    updateLiveGridLayout();
+}
+
+function updateLiveGridLayout() {
+    if (!groupParticipantsGrid) return;
+    const totalCards = groupPeers.size + 1;
+    if (totalCards <= 1) {
+        groupParticipantsGrid.className = 'live-grid layout-1';
+    } else if (totalCards === 2) {
+        groupParticipantsGrid.className = 'live-grid layout-2';
+    } else if (totalCards === 3) {
+        groupParticipantsGrid.className = 'live-grid layout-3';
+    } else {
+        groupParticipantsGrid.className = 'live-grid layout-4';
     }
 }
 
@@ -1638,6 +1718,7 @@ function leaveGroupRoom() {
 
     currentGroupKey = null;
     currentGroupName = null;
+    currentGroupPin = null;
     myGroupMemberId = null;
     isCurrentGroupOwner = false;
 
@@ -1650,13 +1731,13 @@ if (btnDeleteGroup) {
         if (confirm(`Are you sure you want to PERMANENTLY delete group "${currentGroupName}"? All participants will be disconnected.`)) {
             let ownerToken = null;
             try {
-                ownerToken = localStorage.getItem(`gc_owner_${currentGroupKey}`);
+                ownerToken = localStorage.getItem(`gc_owner_${currentGroupPin}`);
             } catch (e) {}
 
-            socket.emit('group_delete', { name: currentGroupName, ownerToken }, (res) => {
+            socket.emit('group_delete', { pin: currentGroupPin, name: currentGroupName, ownerToken }, (res) => {
                 if (res && res.success) {
                     try {
-                        localStorage.removeItem(`gc_owner_${currentGroupKey}`);
+                        localStorage.removeItem(`gc_owner_${currentGroupPin}`);
                     } catch (e) {}
                     leaveGroupRoom();
                 } else {
@@ -1683,10 +1764,12 @@ function cleanupGroupMedia() {
         localVideoPreview.classList.add('hidden');
         localVideoPreview.srcObject = null;
     }
+    if (localAvatarBox) {
+        localAvatarBox.classList.remove('hidden');
+    }
     if (groupCamBtn) {
-        groupCamBtn.className = 'control-btn cam-disabled';
-        const camIcon = groupCamBtn.querySelector('i');
-        if (camIcon) camIcon.className = 'fas fa-video-slash';
+        groupCamBtn.className = 'live-circle-tool-btn cam-trigger cam-disabled';
+        groupCamBtn.innerHTML = '<i class="fas fa-video-slash"></i>';
     }
     if (localCamIndicator) {
         localCamIndicator.className = 'media-badge cam-off';
@@ -1700,11 +1783,8 @@ function cleanupGroupMedia() {
     }
     isGroupAudioMuted = false;
     if (groupMicBtn) {
-        groupMicBtn.className = 'control-btn';
-        const micIcon = groupMicBtn.querySelector('i');
-        const micLabel = groupMicBtn.querySelector('.btn-label');
-        if (micIcon) micIcon.className = 'fas fa-microphone';
-        if (micLabel) micLabel.innerText = 'Mute';
+        groupMicBtn.className = 'live-circle-tool-btn mic-trigger';
+        groupMicBtn.innerHTML = '<i class="fas fa-microphone"></i>';
     }
     if (localMicIndicator) {
         localMicIndicator.className = 'media-badge mic-on';
@@ -1863,4 +1943,259 @@ function closeMediaPopup() {
     }
     if (disappearingMediaOverlay) disappearingMediaOverlay.classList.add('hidden');
     if (mediaPopupImg) mediaPopupImg.src = '';
+}
+
+// ==========================================
+// 10. TIKTOK LIVE CHAT & KEYBOARD-STYLE GIF DRAWER
+// ==========================================
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+const CURATED_GIFS = {
+    trending: [
+        'https://media.tenor.com/2KkMvG-m94AAAAAM/cat-dance-dancing-cat.gif',
+        'https://media.tenor.com/gK61kM58eJ0AAAAM/party-parrot-dance.gif',
+        'https://media.tenor.com/2UbhR8hR3_wAAAAM/vibing-cat-vibing.gif',
+        'https://media.tenor.com/h5TjE3i3uRkAAAAM/shocked-surprised.gif',
+        'https://media.tenor.com/uG3jJv5oU3wAAAAM/leonardo-dicaprio-cheers.gif',
+        'https://media.tenor.com/hK-6156eHqUAAAAM/mind-blown.gif',
+        'https://media.tenor.com/j1_RslCqK7gAAAAM/thumbs-up-okay.gif',
+        'https://media.tenor.com/T0bO-x21UFAAAAAM/lets-go-hype.gif'
+    ],
+    laugh: [
+        'https://media.tenor.com/2v3b9r9KSmcAAAAM/laughing-lol.gif',
+        'https://media.tenor.com/d_y7t7Y2Fv0AAAAM/lmao-dead.gif',
+        'https://media.tenor.com/M6q290kQ1jEAAAAM/minions-laughing.gif',
+        'https://media.tenor.com/yvjW6y83j-4AAAAM/rick-roll-laugh.gif',
+        'https://media.tenor.com/1o2LgSgN0L4AAAAM/baby-laughing.gif',
+        'https://media.tenor.com/V7G39z5e2sUAAAAM/snicker-funny.gif'
+    ],
+    dance: [
+        'https://media.tenor.com/2KkMvG-m94AAAAAM/cat-dance-dancing-cat.gif',
+        'https://media.tenor.com/gK61kM58eJ0AAAAM/party-parrot-dance.gif',
+        'https://media.tenor.com/N6d_uT2FjB0AAAAM/happy-dance-moves.gif',
+        'https://media.tenor.com/kS9wP_N1Q8sAAAAM/groot-dancing.gif',
+        'https://media.tenor.com/V8h38uA_jYAAAAAM/snoop-dogg-dance.gif',
+        'https://media.tenor.com/vH97Z7qO96wAAAAM/spiderman-dance.gif'
+    ],
+    fire: [
+        'https://media.tenor.com/2J3-Q4u7kY0AAAAM/fire-flame.gif',
+        'https://media.tenor.com/fL8kF3aP96wAAAAM/this-is-fine-fire.gif',
+        'https://media.tenor.com/uG3jJv5oU3wAAAAM/leonardo-dicaprio-cheers.gif',
+        'https://media.tenor.com/Z4wP6u57FwAAAAAM/super-saiyan-fire.gif',
+        'https://media.tenor.com/yK5jW8q3tLAAAAAM/lit-fire.gif'
+    ],
+    love: [
+        'https://media.tenor.com/r_zE89iW3pAAAAAM/sending-love-heart.gif',
+        'https://media.tenor.com/w9U1sF2M8pAAAAAM/cat-love-heart.gif',
+        'https://media.tenor.com/Z5o7B_1mYm8AAAAM/hugs-love.gif',
+        'https://media.tenor.com/Fj_2wS_J5kIAAAAM/kisses-sweet.gif'
+    ],
+    anime: [
+        'https://media.tenor.com/8-m4Uo12_2oAAAAM/naruto-run.gif',
+        'https://media.tenor.com/bZ2_t1Yk498AAAAM/anime-shock.gif',
+        'https://media.tenor.com/g5G6G5qFz_sAAAAM/anya-spy-x-family-heh.gif',
+        'https://media.tenor.com/T0bO-x21UFAAAAAM/lets-go-hype.gif',
+        'https://media.tenor.com/V1c5E6_u59cAAAAM/goku-powerup.gif'
+    ],
+    meme: [
+        'https://media.tenor.com/fL8kF3aP96wAAAAM/this-is-fine-fire.gif',
+        'https://media.tenor.com/2UbhR8hR3_wAAAAM/vibing-cat-vibing.gif',
+        'https://media.tenor.com/uG3jJv5oU3wAAAAM/leonardo-dicaprio-cheers.gif',
+        'https://media.tenor.com/d_y7t7Y2Fv0AAAAM/lmao-dead.gif',
+        'https://media.tenor.com/h5TjE3i3uRkAAAAM/shocked-surprised.gif'
+    ],
+    clap: [
+        'https://media.tenor.com/39wP9z6qR5sAAAAM/applause-clapping.gif',
+        'https://media.tenor.com/71_65B3pZ_AAAAAM/leonardo-clapping.gif',
+        'https://media.tenor.com/x0q4N1pXmHkAAAAM/obama-clap.gif'
+    ],
+    wow: [
+        'https://media.tenor.com/hK-6156eHqUAAAAM/mind-blown.gif',
+        'https://media.tenor.com/h5TjE3i3uRkAAAAM/shocked-surprised.gif',
+        'https://media.tenor.com/k6K5K4mP29cAAAAM/omg-wow.gif'
+    ]
+};
+
+let currentGifCategory = 'trending';
+let gifSearchDebounceTimer = null;
+
+if (liveChatForm) {
+    liveChatForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        sendLiveChatMessage();
+    });
+}
+
+function sendLiveChatMessage() {
+    if (!liveChatInput) return;
+    const text = liveChatInput.value.trim();
+    if (!text) return;
+
+    socket.emit('group_chat_message', { text: text }, (res) => {});
+    liveChatInput.value = '';
+}
+
+socket.on('group_chat_message', (msg) => {
+    appendLiveChatMessage(msg);
+});
+
+function appendLiveChatMessage(msg) {
+    if (!liveOverlayStream) return;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'live-chat-bubble';
+
+    const avatarSrc = msg.senderAvatar || getRandomFunnyAvatar();
+    const cleanName = escapeHtml(msg.senderName || 'Friend');
+
+    let innerContent = `<span class="live-chat-username">${cleanName}</span>`;
+    if (msg.text) {
+        innerContent += `<span class="live-chat-text">${escapeHtml(msg.text)}</span>`;
+    }
+    if (msg.gifUrl) {
+        innerContent += `<img src="${escapeHtml(msg.gifUrl)}" alt="GIF" class="live-chat-gif-img" loading="lazy" />`;
+    }
+
+    bubble.innerHTML = `
+        <img class="live-chat-avatar" src="${avatarSrc}" alt="${cleanName}">
+        <div class="live-chat-content">
+            ${innerContent}
+        </div>
+    `;
+
+    liveOverlayStream.appendChild(bubble);
+
+    // Keep memory tidy and performant
+    while (liveOverlayStream.children.length > 35) {
+        liveOverlayStream.removeChild(liveOverlayStream.children[0]);
+    }
+
+    liveOverlayStream.scrollTop = liveOverlayStream.scrollHeight;
+    playSystemSound('message');
+}
+
+// GIF Keyboard Drawer Controls
+if (btnToggleGifDrawer) {
+    btnToggleGifDrawer.addEventListener('click', () => {
+        if (!gifKeyboardDrawer) return;
+        const isOpen = gifKeyboardDrawer.classList.toggle('is-open');
+        btnToggleGifDrawer.classList.toggle('active', isOpen);
+        if (isOpen && (!gifSheetGrid.children.length || gifSheetGrid.querySelector('.gif-loading-state'))) {
+            loadGifsForCategory(currentGifCategory);
+        }
+    });
+}
+
+if (btnCloseGifDrawer) {
+    btnCloseGifDrawer.addEventListener('click', () => {
+        if (gifKeyboardDrawer) gifKeyboardDrawer.classList.remove('is-open');
+        if (btnToggleGifDrawer) btnToggleGifDrawer.classList.remove('active');
+    });
+}
+
+// Category tag chips
+if (gifTagsContainer) {
+    gifTagsContainer.addEventListener('click', (e) => {
+        const chip = e.target.closest('.gif-tag-chip');
+        if (!chip) return;
+        gifTagsContainer.querySelectorAll('.gif-tag-chip').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        const tag = chip.getAttribute('data-tag');
+        currentGifCategory = tag;
+        if (gifSheetSearch) gifSheetSearch.value = '';
+        if (btnClearGifSearch) btnClearGifSearch.classList.add('hidden');
+        loadGifsForCategory(tag);
+    });
+}
+
+// Search input in GIF drawer with Tenor integration
+if (gifSheetSearch) {
+    gifSheetSearch.addEventListener('input', () => {
+        const query = gifSheetSearch.value.trim();
+        if (btnClearGifSearch) {
+            btnClearGifSearch.classList.toggle('hidden', !query);
+        }
+        clearTimeout(gifSearchDebounceTimer);
+        gifSearchDebounceTimer = setTimeout(() => {
+            if (query) {
+                searchTenorGifs(query);
+            } else {
+                loadGifsForCategory(currentGifCategory);
+            }
+        }, 350);
+    });
+}
+
+if (btnClearGifSearch) {
+    btnClearGifSearch.addEventListener('click', () => {
+        if (gifSheetSearch) gifSheetSearch.value = '';
+        btnClearGifSearch.classList.add('hidden');
+        loadGifsForCategory(currentGifCategory);
+    });
+}
+
+function loadGifsForCategory(category) {
+    const gifs = CURATED_GIFS[category] || CURATED_GIFS.trending;
+    renderGifsInSheet(gifs);
+}
+
+async function searchTenorGifs(query) {
+    if (!gifSheetGrid) return;
+    gifSheetGrid.innerHTML = '<div class="gif-loading-state"><i class="fas fa-spinner fa-spin"></i> Searching GIFs...</div>';
+
+    try {
+        const url = `https://tenor.googleapis.com/v2/search?q=${encodeURIComponent(query)}&key=LIVDSRZULELA&limit=18`;
+        const res = await fetch(url);
+        if (res.ok) {
+            const data = await res.json();
+            if (data.results && data.results.length > 0) {
+                const gifUrls = data.results.map(r => {
+                    return (r.media_formats && (r.media_formats.tinygif?.url || r.media_formats.gif?.url)) || r.itemurl;
+                }).filter(Boolean);
+                renderGifsInSheet(gifUrls);
+                return;
+            }
+        }
+    } catch (e) {
+        console.warn('Tenor API fetch fallback:', e);
+    }
+
+    // Fallback: match curated GIFs
+    const allCurated = Object.values(CURATED_GIFS).flat();
+    renderGifsInSheet(allCurated);
+}
+
+function renderGifsInSheet(gifUrls) {
+    if (!gifSheetGrid) return;
+    gifSheetGrid.innerHTML = '';
+
+    if (!gifUrls || gifUrls.length === 0) {
+        gifSheetGrid.innerHTML = '<div class="gif-loading-state">No GIFs found. Try another word!</div>';
+        return;
+    }
+
+    gifUrls.forEach(url => {
+        const card = document.createElement('div');
+        card.className = 'gif-item-card';
+        card.innerHTML = `<img src="${url}" alt="GIF" loading="lazy">`;
+        card.addEventListener('click', () => {
+            selectAndSendGif(url);
+        });
+        gifSheetGrid.appendChild(card);
+    });
+}
+
+function selectAndSendGif(gifUrl) {
+    socket.emit('group_chat_message', { gifUrl: gifUrl });
+    // Smoothly close drawer
+    if (gifKeyboardDrawer) gifKeyboardDrawer.classList.remove('is-open');
+    if (btnToggleGifDrawer) btnToggleGifDrawer.classList.remove('active');
 }

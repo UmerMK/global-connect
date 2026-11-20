@@ -82,26 +82,26 @@ async function runTestSuite() {
         });
 
         // Group Chat
-        socket.on('group_create', ({ name, password }, cb) => {
+        socket.on('group_create', ({ pin, name }, cb) => {
             try {
-                const group = groupsManager.createGroup(name, password);
+                const group = groupsManager.createGroup(pin, name);
                 cb({ success: true, group });
             } catch (e) {
                 cb({ success: false, error: e.message });
             }
         });
 
-        socket.on('group_join', ({ code, password, displayName, ownerToken }, cb) => {
-            const verification = groupsManager.verifyGroup(code, password, '127.0.0.1');
+        socket.on('group_join', ({ pin, displayName, ownerToken }, cb) => {
+            const verification = groupsManager.verifyGroup(pin);
             if (!verification.success) {
                 return cb({ success: false, error: verification.error });
             }
 
-            const groupCode = verification.group.code;
-            const socketRoom = `group_${groupCode}`;
-            const isOwner = groupsManager.isOwner(groupCode, ownerToken);
+            const groupPin = verification.group.pin;
+            const socketRoom = `group_${groupPin}`;
+            const isOwner = groupsManager.isOwner(groupPin, ownerToken);
 
-            socket.groupCode = groupCode;
+            socket.groupPin = groupPin;
             socket.memberId = socket.id;
             socket.displayName = displayName || 'User';
             socket.join(socketRoom);
@@ -133,40 +133,52 @@ async function runTestSuite() {
             });
         });
 
+        socket.on('group_chat_message', ({ text, gifUrl }) => {
+            if (!socket.groupPin) return;
+            const payload = {
+                text,
+                gifUrl,
+                senderName: socket.displayName,
+                senderId: socket.id
+            };
+            io.to(`group_${socket.groupPin}`).emit('group_chat_message', payload);
+        });
+
         socket.on('group_signal', ({ to, data }) => {
-            if (!socket.groupCode) return;
+            if (!socket.groupPin) return;
             const target = io.sockets.sockets.get(to);
-            if (target && target.groupCode === socket.groupCode) {
+            if (target && target.groupPin === socket.groupPin) {
                 target.emit('group_signal', { from: socket.id, data });
             }
         });
 
         socket.on('group_media_state', (state) => {
-            if (!socket.groupCode) return;
-            socket.to(`group_${socket.groupCode}`).emit('group_media_state', {
+            if (!socket.groupPin) return;
+            socket.to(`group_${socket.groupPin}`).emit('group_media_state', {
                 memberId: socket.id,
                 ...state
             });
         });
 
         socket.on('group_speaking', ({ isSpeaking }) => {
-            if (!socket.groupCode) return;
-            socket.to(`group_${socket.groupCode}`).emit('group_speaking', {
+            if (!socket.groupPin) return;
+            socket.to(`group_${socket.groupPin}`).emit('group_speaking', {
                 memberId: socket.id,
                 isSpeaking
             });
         });
 
-        socket.on('group_leave', () => {
-            handleLeaveGroup(socket);
+        socket.on('group_delete', ({ pin, name, ownerToken }, cb) => {
+            const target = pin || name;
+            const delRes = groupsManager.deleteGroup(target, ownerToken);
+            if (delRes.success) {
+                io.to(`group_${target}`).emit('group_deleted', { message: 'Group deleted' });
+            }
+            cb(delRes);
         });
 
-        socket.on('group_delete', ({ code, ownerToken }, cb) => {
-            const res = groupsManager.deleteGroup(code, ownerToken);
-            if (res.success) {
-                io.to(`group_${code}`).emit('group_deleted', { message: 'Group deleted' });
-            }
-            cb(res);
+        socket.on('group_leave', () => {
+            handleLeaveGroup(socket);
         });
 
         socket.on('disconnect', () => {
@@ -235,65 +247,65 @@ async function runTestSuite() {
         clientB.disconnect();
 
         // ====================================================
-        // TEST 2: Permanent Group Creation & Code Stability
+        // TEST 2: Permanent Group Creation & PIN Stability
         // ====================================================
         console.log('\n--- TEST 2: Permanent Group Creation ---');
         const creator = ioClient(SERVER_URL);
         await new Promise(r => creator.on('connect', r));
 
         const createRes = await new Promise((resolve) => {
-            creator.emit('group_create', { name: 'Language Exchange', password: 'safePassword99' }, resolve);
+            creator.emit('group_create', { pin: '7788', name: 'Language Exchange' }, resolve);
         });
 
-        if (!createRes.success || !createRes.group.code.startsWith('GC-')) {
+        if (!createRes.success || createRes.group.pin !== '7788') {
             throw new Error('Group creation failed');
         }
-        const groupCode = createRes.group.code;
+        const groupPin = createRes.group.pin;
         const ownerToken = createRes.group.ownerToken;
-        console.log(`[PASS] Group created: Name="${createRes.group.name}", Code="${groupCode}"`);
+        console.log(`[PASS] Group created: Name="${createRes.group.name}", PIN="${groupPin}"`);
 
-        // Check code permanence: verify code does not change
-        const storedGroup = groupsManager.getGroupPublic(groupCode);
-        if (storedGroup.code !== groupCode) throw new Error('Group code changed');
-        console.log(`[PASS] Permanent group code confirmed: ${storedGroup.code}`);
+        // Check PIN permanence: verify PIN does not change
+        const storedGroup = groupsManager.getGroupPublic(groupPin);
+        if (storedGroup.pin !== groupPin) throw new Error('Group PIN changed');
+        console.log(`[PASS] Permanent group PIN confirmed: ${storedGroup.pin}`);
 
         // ====================================================
-        // TEST 3: Group Join & Password Validation
+        // TEST 3: Group Join & PIN Validation
         // ====================================================
-        console.log('\n--- TEST 3: Group Join & Password Validation ---');
+        console.log('\n--- TEST 3: Group Join & PIN Validation ---');
         const visitor = ioClient(SERVER_URL);
         await new Promise(r => visitor.on('connect', r));
 
-        // Wrong password should be rejected
-        const wrongPassRes = await new Promise(resolve => {
-            visitor.emit('group_join', { code: groupCode, password: 'wrongPassword', displayName: 'Visitor' }, resolve);
+        // Non-existent group PIN should be rejected
+        const badPinRes = await new Promise(resolve => {
+            visitor.emit('group_join', { pin: '0000', displayName: 'Visitor' }, resolve);
         });
-        if (wrongPassRes.success) throw new Error('Wrong password was incorrectly accepted');
-        console.log(`[PASS] Incorrect password rejected properly: "${wrongPassRes.error}"`);
-
-        // Non-existent group code should be rejected
-        const badCodeRes = await new Promise(resolve => {
-            visitor.emit('group_join', { code: 'GC-NOTFOUND', password: 'test', displayName: 'Visitor' }, resolve);
-        });
-        if (badCodeRes.success) throw new Error('Bad code was accepted');
-        console.log(`[PASS] Non-existent code rejected properly: "${badCodeRes.error}"`);
+        if (badPinRes.success) throw new Error('Bad PIN was accepted');
+        console.log(`[PASS] Non-existent PIN rejected properly: "${badPinRes.error}"`);
 
         // Creator joins first
         const creatorJoinRes = await new Promise(resolve => {
-            creator.emit('group_join', { code: groupCode, password: 'safePassword99', displayName: 'Creator', ownerToken }, resolve);
+            creator.emit('group_join', { pin: groupPin, displayName: 'Creator', ownerToken }, resolve);
         });
         if (!creatorJoinRes.success || !creatorJoinRes.isOwner) throw new Error('Creator join failed or owner not recognized');
         console.log('[PASS] Creator joined and recognized as Owner.');
 
-        // Friend joins with correct password
+        // Friend joins with correct PIN
         const friendJoinPromise = new Promise(resolve => creator.on('group_member_joined', resolve));
         const visitorJoinRes = await new Promise(resolve => {
-            visitor.emit('group_join', { code: groupCode, password: 'safePassword99', displayName: 'Friend-1' }, resolve);
+            visitor.emit('group_join', { pin: groupPin, displayName: 'Friend-1' }, resolve);
         });
         if (!visitorJoinRes.success) throw new Error('Visitor join failed');
         const joinedNotification = await friendJoinPromise;
         if (joinedNotification.displayName !== 'Friend-1') throw new Error('Join broadcast failed');
         console.log(`[PASS] Friend-1 joined group room. Creator received notification for ${joinedNotification.displayName}`);
+
+        // Live transparent chat stream message test
+        const liveMsgPromise = new Promise(resolve => visitor.on('group_chat_message', resolve));
+        creator.emit('group_chat_message', { text: 'Hello live stream!' });
+        const receivedLiveMsg = await liveMsgPromise;
+        if (receivedLiveMsg.text !== 'Hello live stream!') throw new Error('Live chat stream message delivery failed');
+        console.log(`[PASS] Live chat transparent stream message delivered: "${receivedLiveMsg.text}"`);
 
         // ====================================================
         // TEST 4: Group WebRTC Signaling & Voice Activity
@@ -341,15 +353,9 @@ async function runTestSuite() {
         // Check groups.json file on disk
         const rawJson = fs.readFileSync(groupsManager.STORAGE_FILE, 'utf8');
         const parsed = JSON.parse(rawJson);
-        const found = parsed.find(g => g.code === groupCode);
+        const found = parsed.find(g => g.pin === groupPin);
         if (!found) throw new Error('Group not found in persistent storage file');
         console.log(`[PASS] Group data verified in ${groupsManager.STORAGE_FILE} on disk.`);
-
-        // Passwords are never plaintext
-        if (found.password || !found.passwordHash || !found.salt) {
-            throw new Error('Password security violation: plaintext password detected!');
-        }
-        console.log('[PASS] Password security verified: stored as scrypt salt + hash, NO plaintext.');
 
         // ====================================================
         // TEST 7: Owner Rights & Permanent Deletion
@@ -357,7 +363,7 @@ async function runTestSuite() {
         console.log('\n--- TEST 7: Owner Rights & Permanent Deletion ---');
         // Non-owner cannot delete
         const badDelete = await new Promise(resolve => {
-            visitor.emit('group_delete', { code: groupCode, ownerToken: 'fake-token' }, resolve);
+            visitor.emit('group_delete', { pin: groupPin, ownerToken: 'fake-token' }, resolve);
         });
         if (badDelete.success) throw new Error('Unauthorized delete succeeded');
         console.log(`[PASS] Non-owner delete rejected: "${badDelete.error}"`);
@@ -365,7 +371,7 @@ async function runTestSuite() {
         // Owner deletes group -> all members alerted
         const deleteBroadcastPromise = new Promise(resolve => visitor.on('group_deleted', resolve));
         const ownerDelete = await new Promise(resolve => {
-            creator.emit('group_delete', { code: groupCode, ownerToken }, resolve);
+            creator.emit('group_delete', { pin: groupPin, ownerToken }, resolve);
         });
         if (!ownerDelete.success) throw new Error('Owner delete failed');
         await deleteBroadcastPromise;
