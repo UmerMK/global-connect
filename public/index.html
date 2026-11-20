@@ -110,7 +110,7 @@
                         </div>
                         <div class="step">
                             <div class="step-icon"><i class="fas fa-users"></i></div>
-                            <p><strong>2. Group Chat</strong><br>Create a private room, set a password, invite friends.</p>
+                            <p><strong>2. Group Chat</strong><br>Pick a group name, set a 4-digit PIN, invite friends.</p>
                         </div>
                         <div class="step">
                             <div class="step-icon"><i class="fas fa-microphone"></i></div>
@@ -128,7 +128,7 @@
                     <p>Learn faster when you are not shy.</p>
                     <ul class="benefit-list">
                         <li><i class="fas fa-check"></i> Talk without feeling shy</li>
-                        <li><i class="fas fa-check"></i> Private password-protected rooms for friends</li>
+                        <li><i class="fas fa-check"></i> Private PIN-protected rooms for friends</li>
                         <li><i class="fas fa-check"></i> Independent camera control for privacy</li>
                         <li><i class="fas fa-check"></i> Improve your English fluency</li>
                     </ul>
@@ -243,7 +243,7 @@
             </div>
 
             <!-- ============================================== -->
-            <!-- GROUP CHAT LOBBY SCREEN (NEW FEATURE)           -->
+            <!-- GROUP CHAT LOBBY SCREEN (NAME + 4-DIGIT PIN)   -->
             <!-- ============================================== -->
             <div id="group-lobby-screen" class="screen hidden scrollable">
                 <div class="group-lobby-container">
@@ -268,29 +268,29 @@
                     <!-- Create Group Panel -->
                     <div id="panel-create-group" class="group-panel">
                         <div class="panel-card">
-                            <div class="panel-badge"><i class="fas fa-shield-alt"></i> Private & Permanent</div>
+                            <div class="panel-badge"><i class="fas fa-shield-alt"></i> Private Group</div>
                             <h3>Start a New Group</h3>
-                            <p class="panel-desc">Create a secure voice & video room for you and your friends. Your room will remain active even when you leave.</p>
+                            <p class="panel-desc">Name your group and choose a 4-digit PIN. Your friends just need the group name and PIN to join.</p>
 
                             <div class="form-group">
-                                <label for="create-group-name"><i class="fas fa-tag"></i> Group Name</label>
-                                <input type="text" id="create-group-name" class="glass-input" placeholder="e.g. English Buddies" maxlength="50" autocomplete="off">
+                                <label for="create-group-name"><i class="fas fa-users"></i> Group Name</label>
+                                <input type="text" id="create-group-name" class="glass-input" placeholder="e.g. Umer or MyGroup" maxlength="40" autocomplete="off">
                             </div>
 
                             <div class="form-group">
-                                <label for="create-group-password"><i class="fas fa-lock"></i> Group Password</label>
-                                <input type="password" id="create-group-password" class="glass-input" placeholder="At least 4 characters" autocomplete="new-password">
+                                <label for="create-group-password"><i class="fas fa-key"></i> 4-Digit Password / PIN</label>
+                                <input type="password" id="create-group-password" class="glass-input" placeholder="e.g. 1234" maxlength="12" autocomplete="new-password">
                             </div>
 
                             <div class="form-group">
                                 <label for="create-group-username"><i class="fas fa-user"></i> Your Display Name (Optional)</label>
-                                <input type="text" id="create-group-username" class="glass-input" placeholder="e.g. Alex" maxlength="30" autocomplete="off">
+                                <input type="text" id="create-group-username" class="glass-input" placeholder="e.g. Umer" maxlength="30" autocomplete="off">
                             </div>
 
                             <div id="create-group-error" class="form-error hidden"></div>
 
                             <button id="btn-submit-create-group" class="primary-btn full-width">
-                                <i class="fas fa-sparkles"></i> Create Group Room
+                                <i class="fas fa-sparkles"></i> Create & Enter Group Room
                             </button>
                         </div>
                     </div>
@@ -298,23 +298,23 @@
                     <!-- Join Group Panel -->
                     <div id="panel-join-group" class="group-panel hidden">
                         <div class="panel-card">
-                            <div class="panel-badge"><i class="fas fa-key"></i> Passcode Required</div>
+                            <div class="panel-badge"><i class="fas fa-lock"></i> Enter Group</div>
                             <h3>Join an Existing Group</h3>
-                            <p class="panel-desc">Enter the permanent group code and password shared by your friend.</p>
+                            <p class="panel-desc">Enter the group name and 4-digit PIN shared by your friend.</p>
 
                             <div class="form-group">
-                                <label for="join-group-code"><i class="fas fa-hashtag"></i> Group Access Code</label>
-                                <input type="text" id="join-group-code" class="glass-input uppercase-input" placeholder="e.g. GC-7X9K2M" maxlength="12" autocomplete="off">
+                                <label for="join-group-name"><i class="fas fa-users"></i> Group Name</label>
+                                <input type="text" id="join-group-name" class="glass-input" placeholder="e.g. Umer or MyGroup" maxlength="40" autocomplete="off">
                             </div>
 
                             <div class="form-group">
-                                <label for="join-group-password"><i class="fas fa-lock"></i> Group Password</label>
-                                <input type="password" id="join-group-password" class="glass-input" placeholder="Enter group password" autocomplete="current-password">
+                                <label for="join-group-password"><i class="fas fa-key"></i> 4-Digit Password / PIN</label>
+                                <input type="password" id="join-group-password" class="glass-input" placeholder="Enter 4-digit PIN" autocomplete="current-password">
                             </div>
 
                             <div class="form-group">
                                 <label for="join-group-username"><i class="fas fa-user"></i> Your Display Name (Optional)</label>
-                                <input type="text" id="join-group-username" class="glass-input" placeholder="e.g. Sam" maxlength="30" autocomplete="off">
+                                <input type="text" id="join-group-username" class="glass-input" placeholder="e.g. Friend" maxlength="30" autocomplete="off">
                             </div>
 
                             <div id="join-group-error" class="form-error hidden"></div>
@@ -324,54 +324,21 @@
                             </button>
                         </div>
                     </div>
-
-                    <!-- Group Created Success Modal / Overlay -->
-                    <div id="group-created-modal" class="group-modal hidden">
-                        <div class="modal-card">
-                            <div class="modal-icon-success">
-                                <i class="fas fa-check-circle"></i>
-                            </div>
-                            <h3>Group Created!</h3>
-                            <p class="modal-sub">Share this permanent access code with your friends:</p>
-
-                            <div class="code-share-box">
-                                <span class="share-label">GROUP ACCESS CODE</span>
-                                <div class="code-row">
-                                    <span id="created-code-display" class="group-code-text">GC-XXXXXX</span>
-                                    <button id="btn-copy-code" class="icon-btn-pill" title="Copy code">
-                                        <i class="fas fa-copy"></i> Copy
-                                    </button>
-                                </div>
-                                <span id="copy-confirmation" class="copy-hint hidden">Copied to clipboard!</span>
-                            </div>
-
-                            <div class="password-notice">
-                                <i class="fas fa-info-circle"></i> Friends will need this code AND your chosen password to enter.
-                            </div>
-
-                            <button id="btn-enter-created-group" class="primary-btn full-width">
-                                Enter Voice & Video Room <i class="fas fa-arrow-right"></i>
-                            </button>
-                        </div>
-                    </div>
                 </div>
             </div>
 
             <!-- ============================================== -->
-            <!-- GROUP VOICE & VIDEO ROOM SCREEN (NEW FEATURE)   -->
+            <!-- GROUP VOICE & VIDEO ROOM SCREEN                -->
             <!-- ============================================== -->
             <div id="group-room-screen" class="screen hidden">
                 <!-- Group Header -->
                 <div class="group-room-header">
                     <div class="group-header-info">
                         <h3 id="room-group-name">Group Name</h3>
-                        <div class="group-code-pill" id="room-code-badge" title="Click to copy group code">
-                            <i class="fas fa-key"></i> <span id="room-group-code">GC-XXXXXX</span>
-                            <span class="pill-copy-icon"><i class="fas fa-copy"></i></span>
-                        </div>
+                        <span class="group-room-status-sub"><i class="fas fa-circle online-mini-dot"></i> Live Voice & Video</span>
                     </div>
                     <div class="group-header-actions">
-                        <button id="btn-delete-group" class="danger-btn-mini hidden" title="Delete Group Permanently (Owner Only)">
+                        <button id="btn-delete-group" class="danger-btn-mini hidden" title="Delete Group (Owner Only)">
                             <i class="fas fa-trash-alt"></i> Delete
                         </button>
                         <button id="btn-leave-group" class="secondary-btn-mini" title="Leave Group">
@@ -411,7 +378,7 @@
                             </div>
                         </div>
 
-                        <!-- Dynamic remote participant cards inserted here by script.js -->
+                        <!-- Dynamic remote participant cards inserted here -->
                     </div>
                 </div>
 
@@ -446,7 +413,7 @@
 
     <!-- Load Socket.IO client library -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="script.js?v=3.5"></script>
+    <script src="script.js?v=4.0"></script>
 </body>
 
 </html>

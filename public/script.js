@@ -711,11 +711,10 @@ let groupAudioStream = null;
 let groupVideoStream = null;
 let isGroupAudioMuted = false;
 let isGroupCameraOn = false;
-let currentGroupCode = null;
+let currentGroupKey = null;
 let currentGroupName = null;
 let myGroupMemberId = null;
 let isCurrentGroupOwner = false;
-let pendingCreatedGroup = null;
 let groupSpeechInterval = null;
 let isSpeakingState = false;
 let groupAudioContext = null;
@@ -736,23 +735,14 @@ const btnSubmitCreateGroup = document.getElementById('btn-submit-create-group');
 const createGroupError = document.getElementById('create-group-error');
 
 // Form Elements - Join
-const joinGroupCodeInput = document.getElementById('join-group-code');
+const joinGroupNameInput = document.getElementById('join-group-name');
 const joinGroupPassInput = document.getElementById('join-group-password');
 const joinGroupUserInput = document.getElementById('join-group-username');
 const btnSubmitJoinGroup = document.getElementById('btn-submit-join-group');
 const joinGroupError = document.getElementById('join-group-error');
 
-// Modal Elements
-const groupCreatedModal = document.getElementById('group-created-modal');
-const createdCodeDisplay = document.getElementById('created-code-display');
-const btnCopyCode = document.getElementById('btn-copy-code');
-const copyConfirmation = document.getElementById('copy-confirmation');
-const btnEnterCreatedGroup = document.getElementById('btn-enter-created-group');
-
 // Room Elements
 const roomGroupName = document.getElementById('room-group-name');
-const roomGroupCode = document.getElementById('room-group-code');
-const roomCodeBadge = document.getElementById('room-code-badge');
 const btnDeleteGroup = document.getElementById('btn-delete-group');
 const btnLeaveGroup = document.getElementById('btn-leave-group');
 const groupLeaveControlBtn = document.getElementById('group-leave-control-btn');
@@ -800,13 +790,6 @@ if (tabCreateGroup && tabJoinGroup) {
     });
 }
 
-// Auto uppercase group code input
-if (joinGroupCodeInput) {
-    joinGroupCodeInput.addEventListener('input', () => {
-        joinGroupCodeInput.value = joinGroupCodeInput.value.toUpperCase();
-    });
-}
-
 // ==========================================
 // 2. CREATE GROUP
 // ==========================================
@@ -824,7 +807,7 @@ function handleCreateGroup() {
         return;
     }
     if (!password || password.length < 4) {
-        showFormError(createGroupError, 'Password must be at least 4 characters.');
+        showFormError(createGroupError, 'Password must be at least 4 digits.');
         return;
     }
 
@@ -834,7 +817,7 @@ function handleCreateGroup() {
 
     socket.emit('group_create', { name, password }, (res) => {
         btnSubmitCreateGroup.disabled = false;
-        btnSubmitCreateGroup.innerHTML = '<i class="fas fa-sparkles"></i> Create Group Room';
+        btnSubmitCreateGroup.innerHTML = '<i class="fas fa-sparkles"></i> Create & Enter Group Room';
 
         if (!res || !res.success) {
             showFormError(createGroupError, (res && res.error) || 'Failed to create group.');
@@ -844,47 +827,13 @@ function handleCreateGroup() {
         const group = res.group;
         // Persist creator's owner token in localStorage
         try {
-            localStorage.setItem(`gc_owner_${group.code}`, group.ownerToken);
+            localStorage.setItem(`gc_owner_${group.key}`, group.ownerToken);
         } catch (e) {
             console.warn('localStorage not accessible:', e);
         }
 
-        pendingCreatedGroup = {
-            code: group.code,
-            name: group.name,
-            password: password,
-            displayName: displayName,
-            ownerToken: group.ownerToken
-        };
-
-        createdCodeDisplay.innerText = group.code;
-        groupCreatedModal.classList.remove('hidden');
-    });
-}
-
-// Copy Code Button in Modal
-if (btnCopyCode) {
-    btnCopyCode.addEventListener('click', () => {
-        if (!pendingCreatedGroup) return;
-        copyTextToClipboard(pendingCreatedGroup.code);
-        copyConfirmation.classList.remove('hidden');
-        setTimeout(() => {
-            copyConfirmation.classList.add('hidden');
-        }, 2500);
-    });
-}
-
-// Enter Room after Group Creation
-if (btnEnterCreatedGroup) {
-    btnEnterCreatedGroup.addEventListener('click', () => {
-        if (!pendingCreatedGroup) return;
-        groupCreatedModal.classList.add('hidden');
-        enterGroupRoom(
-            pendingCreatedGroup.code,
-            pendingCreatedGroup.password,
-            pendingCreatedGroup.displayName,
-            pendingCreatedGroup.ownerToken
-        );
+        // Enter group room immediately
+        enterGroupRoom(group.name, password, displayName, group.ownerToken);
     });
 }
 
@@ -896,16 +845,16 @@ if (btnSubmitJoinGroup) {
 }
 
 function handleJoinGroup() {
-    const code = joinGroupCodeInput.value.trim().toUpperCase();
+    const name = joinGroupNameInput.value.trim();
     const password = joinGroupPassInput.value;
     const displayName = joinGroupUserInput.value.trim() || 'Friend';
 
-    if (!code) {
-        showFormError(joinGroupError, 'Please enter the group code.');
+    if (!name) {
+        showFormError(joinGroupError, 'Please enter the group name.');
         return;
     }
     if (!password) {
-        showFormError(joinGroupError, 'Please enter the group password.');
+        showFormError(joinGroupError, 'Please enter the 4-digit password.');
         return;
     }
 
@@ -916,18 +865,18 @@ function handleJoinGroup() {
     // Check if this browser has an ownerToken saved for this group
     let ownerToken = null;
     try {
-        ownerToken = localStorage.getItem(`gc_owner_${code}`);
+        ownerToken = localStorage.getItem(`gc_owner_${name.toLowerCase()}`);
     } catch (e) {}
 
-    enterGroupRoom(code, password, displayName, ownerToken, () => {
+    enterGroupRoom(name, password, displayName, ownerToken, () => {
         btnSubmitJoinGroup.disabled = false;
         btnSubmitJoinGroup.innerHTML = '<i class="fas fa-door-open"></i> Join Group Room';
     });
 }
 
 // Helper: Enter group room
-function enterGroupRoom(code, password, displayName, ownerToken, onComplete) {
-    socket.emit('group_join', { code, password, displayName, ownerToken }, async (response) => {
+function enterGroupRoom(name, password, displayName, ownerToken, onComplete) {
+    socket.emit('group_join', { name, password, displayName, ownerToken }, async (response) => {
         if (typeof onComplete === 'function') onComplete();
 
         if (!response || !response.success) {
@@ -937,14 +886,13 @@ function enterGroupRoom(code, password, displayName, ownerToken, onComplete) {
         }
 
         // Successfully joined group on server
-        currentGroupCode = response.group.code;
+        currentGroupKey = response.group.key;
         currentGroupName = response.group.name;
         myGroupMemberId = response.memberId;
         isCurrentGroupOwner = response.isOwner;
 
         // Update UI Header
         roomGroupName.innerText = currentGroupName;
-        roomGroupCode.innerText = currentGroupCode;
         localDisplayName.innerText = `${response.displayName}${response.isOwner ? ' (Host)' : ''}`;
         localAvatarImg.src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${response.memberId}`;
 
@@ -965,42 +913,11 @@ function enterGroupRoom(code, password, displayName, ownerToken, onComplete) {
     });
 }
 
-// Copy Code Pill in Room Header
-if (roomCodeBadge) {
-    roomCodeBadge.addEventListener('click', () => {
-        if (!currentGroupCode) return;
-        copyTextToClipboard(currentGroupCode);
-        const origHtml = roomCodeBadge.innerHTML;
-        roomCodeBadge.innerHTML = '<i class="fas fa-check"></i> <span>Copied!</span>';
-        setTimeout(() => {
-            roomCodeBadge.innerHTML = origHtml;
-        }, 1800);
-    });
-}
-
 // Helper: Form Error Display
 function showFormError(element, message) {
     if (!element) return;
     element.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${message}`;
     element.classList.remove('hidden');
-}
-
-// Helper: Clipboard Copy
-function copyTextToClipboard(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).catch(e => fallbackCopy(text));
-    } else {
-        fallbackCopy(text);
-    }
-}
-
-function fallbackCopy(text) {
-    const input = document.createElement('input');
-    input.value = text;
-    document.body.appendChild(input);
-    input.select();
-    try { document.execCommand('copy'); } catch (e) {}
-    document.body.removeChild(input);
 }
 
 // ==========================================
@@ -1536,7 +1453,7 @@ function leaveGroupRoom() {
         removeRemoteParticipant(memberId);
     }
 
-    currentGroupCode = null;
+    currentGroupKey = null;
     currentGroupName = null;
     myGroupMemberId = null;
     isCurrentGroupOwner = false;
@@ -1546,17 +1463,17 @@ function leaveGroupRoom() {
 
 if (btnDeleteGroup) {
     btnDeleteGroup.addEventListener('click', () => {
-        if (!currentGroupCode || !isCurrentGroupOwner) return;
-        if (confirm('Are you sure you want to PERMANENTLY delete this group? All participants will be disconnected.')) {
+        if (!currentGroupName || !isCurrentGroupOwner) return;
+        if (confirm(`Are you sure you want to PERMANENTLY delete group "${currentGroupName}"? All participants will be disconnected.`)) {
             let ownerToken = null;
             try {
-                ownerToken = localStorage.getItem(`gc_owner_${currentGroupCode}`);
+                ownerToken = localStorage.getItem(`gc_owner_${currentGroupKey}`);
             } catch (e) {}
 
-            socket.emit('group_delete', { code: currentGroupCode, ownerToken }, (res) => {
+            socket.emit('group_delete', { name: currentGroupName, ownerToken }, (res) => {
                 if (res && res.success) {
                     try {
-                        localStorage.removeItem(`gc_owner_${currentGroupCode}`);
+                        localStorage.removeItem(`gc_owner_${currentGroupKey}`);
                     } catch (e) {}
                     leaveGroupRoom();
                 } else {

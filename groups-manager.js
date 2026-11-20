@@ -6,15 +6,14 @@ const crypto = require('crypto');
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const STORAGE_FILE = path.join(DATA_DIR, 'groups.json');
 
-// In-memory cache backed by atomic file persistence
-let groupsMap = new Map(); // code -> group object
+// In-memory cache: groupKey (lowercase name) -> group object
+let groupsMap = new Map();
 
-// In-memory rate limiting: key -> { attempts, lockedUntil }
+// Rate limiting: key -> { attempts, lockedUntil }
 const rateLimitMap = new Map();
 const MAX_ATTEMPTS = 5;
 const LOCKOUT_MS = 5 * 60 * 1000; // 5 minutes
 
-// Ensure data directory exists
 function ensureStorageDir() {
     try {
         if (!fs.existsSync(DATA_DIR)) {
@@ -25,7 +24,6 @@ function ensureStorageDir() {
     }
 }
 
-// Load groups from disk on startup
 function loadGroups() {
     ensureStorageDir();
     try {
@@ -35,8 +33,10 @@ function loadGroups() {
             if (Array.isArray(data)) {
                 groupsMap.clear();
                 data.forEach(g => {
-                    if (g && g.code) {
-                        groupsMap.set(g.code, g);
+                    if (g && g.key) {
+                        groupsMap.set(g.key, g);
+                    } else if (g && g.name) {
+                        groupsMap.set(g.name.trim().toLowerCase(), g);
                     }
                 });
                 console.log(`[Storage] Loaded ${groupsMap.size} persistent groups from ${STORAGE_FILE}`);
@@ -49,7 +49,6 @@ function loadGroups() {
     }
 }
 
-// Atomic save to disk
 function saveGroups() {
     ensureStorageDir();
     try {
@@ -62,26 +61,15 @@ function saveGroups() {
     }
 }
 
-// Generate unambiguous, secure group code (e.g. GC-7X9K2M)
-function generateGroupCode() {
-    const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-    let code = '';
-    do {
-        code = 'GC-';
-        for (let i = 0; i < 6; i++) {
-            const randomIndex = crypto.randomInt(0, chars.length);
-            code += chars[randomIndex];
-        }
-    } while (groupsMap.has(code));
-    return code;
+function normalizeKey(name) {
+    if (!name || typeof name !== 'string') return '';
+    return name.trim().toLowerCase();
 }
 
-// Secure password hashing with scrypt
 function hashPassword(password, salt) {
     return crypto.scryptSync(password, salt, 64).toString('hex');
 }
 
-// Verify password with constant-time equality check
 function verifyHash(password, salt, expectedHash) {
     const hash = crypto.scryptSync(password, salt, 64);
     const expected = Buffer.from(expectedHash, 'hex');
@@ -89,7 +77,6 @@ function verifyHash(password, salt, expectedHash) {
     return crypto.timingSafeEqual(hash, expected);
 }
 
-// Rate limiting check
 function checkRateLimit(key) {
     const now = Date.now();
     const entry = rateLimitMap.get(key);
@@ -126,25 +113,33 @@ function recordAttempt(key, success) {
     rateLimitMap.set(key, entry);
 }
 
-// Create new group
+// Create new group by Name + 4-digit Password
 function createGroup(name, password) {
     if (!name || typeof name !== 'string' || name.trim().length === 0) {
-        throw new Error('Group name is required.');
+        throw new Error('Please enter a group name.');
     }
     const cleanName = name.trim().slice(0, 50);
+    const key = normalizeKey(cleanName);
 
-    if (!password || typeof password !== 'string' || password.length < 4) {
-        throw new Error('Password must be at least 4 characters long.');
+    if (key.length < 2) {
+        throw new Error('Group name must be at least 2 characters.');
     }
 
-    const code = generateGroupCode();
+    if (groupsMap.has(key)) {
+        throw new Error(`Group "${cleanName}" already exists. Please pick another name or join it.`);
+    }
+
+    if (!password || typeof password !== 'string' || password.length < 4) {
+        throw new Error('Password must be at least 4 digits/characters.');
+    }
+
     const salt = crypto.randomBytes(16).toString('hex');
     const passwordHash = hashPassword(password, salt);
     const ownerToken = crypto.randomBytes(32).toString('hex');
 
     const group = {
         id: `grp_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
-        code: code,
+        key: key,
         name: cleanName,
         salt: salt,
         passwordHash: passwordHash,
@@ -152,34 +147,34 @@ function createGroup(name, password) {
         createdAt: new Date().toISOString()
     };
 
-    groupsMap.set(code, group);
+    groupsMap.set(key, group);
     saveGroups();
 
     return {
-        code: group.code,
+        key: group.key,
         name: group.name,
         ownerToken: ownerToken,
         createdAt: group.createdAt
     };
 }
 
-// Verify group credentials and return safe group object
-function verifyGroup(code, password, clientIp) {
-    if (!code || typeof code !== 'string') {
-        return { success: false, error: 'Group code is required.' };
+// Verify group by Name + Password
+function verifyGroup(name, password, clientIp) {
+    if (!name || typeof name !== 'string') {
+        return { success: false, error: 'Group name is required.' };
     }
-    const formattedCode = code.trim().toUpperCase();
+    const key = normalizeKey(name);
 
-    const rateKey = `${clientIp || 'client'}_${formattedCode}`;
+    const rateKey = `${clientIp || 'client'}_${key}`;
     const rateCheck = checkRateLimit(rateKey);
     if (!rateCheck.allowed) {
         return { success: false, error: rateCheck.error };
     }
 
-    const group = groupsMap.get(formattedCode);
+    const group = groupsMap.get(key);
     if (!group) {
         recordAttempt(rateKey, false);
-        return { success: false, error: 'Group not found. Please verify the code.' };
+        return { success: false, error: `Group "${name.trim()}" not found. Please check the name.` };
     }
 
     if (!password || typeof password !== 'string') {
@@ -189,14 +184,14 @@ function verifyGroup(code, password, clientIp) {
     const matches = verifyHash(password, group.salt, group.passwordHash);
     if (!matches) {
         recordAttempt(rateKey, false);
-        return { success: false, error: 'Incorrect group password.' };
+        return { success: false, error: 'Incorrect 4-digit password.' };
     }
 
     recordAttempt(rateKey, true);
     return {
         success: true,
         group: {
-            code: group.code,
+            key: group.key,
             name: group.name,
             createdAt: group.createdAt
         }
@@ -204,10 +199,10 @@ function verifyGroup(code, password, clientIp) {
 }
 
 // Delete group (owner only)
-function deleteGroup(code, ownerToken) {
-    if (!code || !ownerToken) return { success: false, error: 'Missing code or owner token.' };
-    const formattedCode = code.trim().toUpperCase();
-    const group = groupsMap.get(formattedCode);
+function deleteGroup(name, ownerToken) {
+    if (!name || !ownerToken) return { success: false, error: 'Missing group name or owner token.' };
+    const key = normalizeKey(name);
+    const group = groupsMap.get(key);
     if (!group) return { success: false, error: 'Group not found.' };
 
     const tokenBuf = Buffer.from(ownerToken);
@@ -216,27 +211,25 @@ function deleteGroup(code, ownerToken) {
         return { success: false, error: 'Unauthorized: only the group owner can delete this group.' };
     }
 
-    groupsMap.delete(formattedCode);
+    groupsMap.delete(key);
     saveGroups();
     return { success: true };
 }
 
-// Get group public details
-function getGroupPublic(code) {
-    if (!code) return null;
-    const group = groupsMap.get(code.trim().toUpperCase());
+function getGroupPublic(name) {
+    if (!name) return null;
+    const group = groupsMap.get(normalizeKey(name));
     if (!group) return null;
     return {
-        code: group.code,
+        key: group.key,
         name: group.name,
         createdAt: group.createdAt
     };
 }
 
-// Verify if a token is the owner of a group
-function isOwner(code, ownerToken) {
-    if (!code || !ownerToken) return false;
-    const group = groupsMap.get(code.trim().toUpperCase());
+function isOwner(name, ownerToken) {
+    if (!name || !ownerToken) return false;
+    const group = groupsMap.get(normalizeKey(name));
     if (!group) return false;
     const tokenBuf = Buffer.from(ownerToken);
     const expectedBuf = Buffer.from(group.ownerToken);

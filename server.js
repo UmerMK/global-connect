@@ -7,8 +7,8 @@ const groupsManager = require('./groups-manager');
 const app = express();
 const server = http.createServer(app);
 
-// SERVER VERSION 3.0 — GLOBAL CONNECT WITH GROUP CHAT & VOICE/VIDEO
-console.log("GLOBAL_CONNECT_SERVER: v3.0 Starting...");
+// SERVER VERSION 3.1 — GLOBAL CONNECT (NAME + 4-DIGIT PIN GROUP CHAT)
+console.log("GLOBAL_CONNECT_SERVER: v3.1 Starting...");
 
 // Initialize Socket.IO with CORS
 const io = new Server(server, {
@@ -35,13 +35,14 @@ const broadcastOnlineCount = () => {
 
 // Helper to safely remove a socket from a group and notify peers
 function handleLeaveGroup(socket) {
-    if (!socket.groupCode) return;
-    const code = socket.groupCode;
-    const socketRoom = `group_${code}`;
+    if (!socket.groupKey) return;
+    const key = socket.groupKey;
+    const socketRoom = `group_${key}`;
     socket.leave(socketRoom);
     socket.to(socketRoom).emit('group_member_left', { memberId: socket.id });
-    console.log(`[Group] Member ${socket.id} left group ${code}`);
-    socket.groupCode = null;
+    console.log(`[Group] Member ${socket.id} left group ${socket.groupName || key}`);
+    socket.groupKey = null;
+    socket.groupName = null;
     socket.memberId = null;
     socket.displayName = null;
     socket.isGroupOwner = null;
@@ -59,8 +60,7 @@ io.on('connection', (socket) => {
     // ==========================================
     socket.on('find_match', () => {
         if (socket.roomId || socket.peerId) return;
-        // Also ensure not in group when finding random match
-        if (socket.groupCode) handleLeaveGroup(socket);
+        if (socket.groupKey) handleLeaveGroup(socket);
 
         waitingUsers = waitingUsers.filter(user => user.id !== socket.id);
 
@@ -127,14 +127,14 @@ io.on('connection', (socket) => {
     });
 
     // ==========================================
-    // 2. GROUP CHAT & VOICE/VIDEO (NEW FEATURE)
+    // 2. GROUP CHAT & VOICE/VIDEO (NAME + 4-DIGIT PIN)
     // ==========================================
 
-    // Create a new permanent private group
+    // Create a new permanent group
     socket.on('group_create', ({ name, password }, callback) => {
         try {
             const newGroup = groupsManager.createGroup(name, password);
-            console.log(`[Group] Created new group ${newGroup.code} (${newGroup.name})`);
+            console.log(`[Group] Created new group "${newGroup.name}"`);
             if (typeof callback === 'function') {
                 callback({ success: true, group: newGroup });
             }
@@ -146,9 +146,9 @@ io.on('connection', (socket) => {
     });
 
     // Join an existing group room
-    socket.on('group_join', ({ code, password, displayName, ownerToken }, callback) => {
+    socket.on('group_join', ({ name, password, displayName, ownerToken }, callback) => {
         const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
-        const verification = groupsManager.verifyGroup(code, password, clientIp);
+        const verification = groupsManager.verifyGroup(name, password, clientIp);
 
         if (!verification.success) {
             if (typeof callback === 'function') {
@@ -157,8 +157,9 @@ io.on('connection', (socket) => {
             return;
         }
 
-        const groupCode = verification.group.code;
-        const socketRoom = `group_${groupCode}`;
+        const groupKey = verification.group.key;
+        const groupName = verification.group.name;
+        const socketRoom = `group_${groupKey}`;
 
         // Leave random 1-on-1 waiting or active room
         waitingUsers = waitingUsers.filter(u => u.id !== socket.id);
@@ -177,15 +178,16 @@ io.on('connection', (socket) => {
         }
 
         // Leave existing group if different
-        if (socket.groupCode && socket.groupCode !== groupCode) {
+        if (socket.groupKey && socket.groupKey !== groupKey) {
             handleLeaveGroup(socket);
         }
 
-        const isOwner = groupsManager.isOwner(groupCode, ownerToken);
+        const isOwner = groupsManager.isOwner(groupName, ownerToken);
         const memberId = socket.id;
         const cleanName = (displayName && displayName.trim().slice(0, 30)) || `Friend ${socket.id.slice(0, 4)}`;
 
-        socket.groupCode = groupCode;
+        socket.groupKey = groupKey;
+        socket.groupName = groupName;
         socket.memberId = memberId;
         socket.displayName = cleanName;
         socket.isGroupOwner = isOwner;
@@ -193,7 +195,7 @@ io.on('connection', (socket) => {
         socket.isAudioMuted = false;
 
         socket.join(socketRoom);
-        console.log(`[Group] User ${socket.id} (${cleanName}) joined group ${groupCode}`);
+        console.log(`[Group] User ${socket.id} (${cleanName}) joined "${groupName}"`);
 
         // Gather existing members in the group room
         const roomSockets = io.sockets.adapter.rooms.get(socketRoom) || new Set();
@@ -201,7 +203,7 @@ io.on('connection', (socket) => {
         for (const sId of roomSockets) {
             if (sId !== socket.id) {
                 const s = io.sockets.sockets.get(sId);
-                if (s && s.groupCode === groupCode) {
+                if (s && s.groupKey === groupKey) {
                     existingMembers.push({
                         memberId: s.memberId,
                         displayName: s.displayName,
@@ -213,7 +215,7 @@ io.on('connection', (socket) => {
             }
         }
 
-        // Send confirmation and peer list to the joining user
+        // Send confirmation and peer list to joining user
         if (typeof callback === 'function') {
             callback({
                 success: true,
@@ -237,9 +239,9 @@ io.on('connection', (socket) => {
 
     // Targeted WebRTC signaling between two members in a group
     socket.on('group_signal', ({ to, data }) => {
-        if (!socket.groupCode || !to || !data) return;
+        if (!socket.groupKey || !to || !data) return;
         const targetSocket = io.sockets.sockets.get(to);
-        if (targetSocket && targetSocket.groupCode === socket.groupCode) {
+        if (targetSocket && targetSocket.groupKey === socket.groupKey) {
             targetSocket.emit('group_signal', {
                 from: socket.id,
                 data: data
@@ -249,11 +251,11 @@ io.on('connection', (socket) => {
 
     // Media state update (microphone mute, camera on/off)
     socket.on('group_media_state', ({ isAudioMuted, isCameraOn }) => {
-        if (!socket.groupCode) return;
+        if (!socket.groupKey) return;
         if (typeof isAudioMuted === 'boolean') socket.isAudioMuted = isAudioMuted;
         if (typeof isCameraOn === 'boolean') socket.isCameraOn = isCameraOn;
 
-        const socketRoom = `group_${socket.groupCode}`;
+        const socketRoom = `group_${socket.groupKey}`;
         socket.to(socketRoom).emit('group_media_state', {
             memberId: socket.id,
             isAudioMuted: socket.isAudioMuted,
@@ -263,8 +265,8 @@ io.on('connection', (socket) => {
 
     // Speaking activity indicator
     socket.on('group_speaking', ({ isSpeaking }) => {
-        if (!socket.groupCode) return;
-        const socketRoom = `group_${socket.groupCode}`;
+        if (!socket.groupKey) return;
+        const socketRoom = `group_${socket.groupKey}`;
         socket.to(socketRoom).emit('group_speaking', {
             memberId: socket.id,
             isSpeaking: !!isSpeaking
@@ -278,13 +280,14 @@ io.on('connection', (socket) => {
     });
 
     // Delete group (owner only)
-    socket.on('group_delete', ({ code, ownerToken }, callback) => {
-        const result = groupsManager.deleteGroup(code, ownerToken);
+    socket.on('group_delete', ({ name, ownerToken }, callback) => {
+        const result = groupsManager.deleteGroup(name, ownerToken);
         if (result.success) {
-            console.log(`[Group] Group ${code} permanently deleted by owner.`);
-            const socketRoom = `group_${code}`;
+            console.log(`[Group] Group "${name}" permanently deleted by owner.`);
+            const key = name.trim().toLowerCase();
+            const socketRoom = `group_${key}`;
             io.to(socketRoom).emit('group_deleted', {
-                message: 'This group has been permanently deleted by its owner.'
+                message: `Group "${name}" has been deleted by its owner.`
             });
 
             // Evict all sockets from room
@@ -293,7 +296,8 @@ io.on('connection', (socket) => {
                 const s = io.sockets.sockets.get(sId);
                 if (s) {
                     s.leave(socketRoom);
-                    s.groupCode = null;
+                    s.groupKey = null;
+                    s.groupName = null;
                 }
             }
         }
@@ -301,15 +305,13 @@ io.on('connection', (socket) => {
     });
 
     // ==========================================
-    // DISCONNECT CLEANUP (ALL SESSIONS)
+    // DISCONNECT CLEANUP
     // ==========================================
     socket.on('disconnect', () => {
-        // 1. Group cleanup
-        if (socket.groupCode) {
+        if (socket.groupKey) {
             handleLeaveGroup(socket);
         }
 
-        // 2. 1-on-1 Random Match cleanup
         waitingUsers = waitingUsers.filter(user => user.id !== socket.id);
         if (socket.peerId) {
             const partnerSocket = io.sockets.sockets.get(socket.peerId);
@@ -328,5 +330,5 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server v3.0 running on ${PORT}`);
+    console.log(`Server v3.1 running on ${PORT}`);
 });
