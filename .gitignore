@@ -1,0 +1,4 @@
+node_modules/
+.npm-cache/
+data/groups.json
+data/*.tmp*

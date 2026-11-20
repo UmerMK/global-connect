@@ -4,10 +4,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Global Connect | Talk to People</title>
+    <title>Global Connect | Talk to People & Friends</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="style.css">
     <style>
@@ -53,15 +53,14 @@
 
         .visualizer-mini .bar.local-bar {
             background: #f72585;
-            /* Vibrant pink for local mic */
         }
     </style>
 </head>
 
 <body>
 
-    <div class="container">
-        <header>
+    <div class="container" id="main-container">
+        <header id="app-header">
             <h1>Global Connect</h1>
             <p>Talk to anyone. No login. Stay private.</p>
         </header>
@@ -78,11 +77,15 @@
                         <i class="fas fa-globe-americas"></i>
                     </div>
                     <h2 class="hero-title">Talk to People from Anywhere. Now.</h2>
-                    <p class="hero-sub">Practice English with strangers.<br>No profiles. Just talk.</p>
+                    <p class="hero-sub">Practice English with strangers or chat with friends.<br>No profiles. Real-time voice & video.</p>
 
                     <div class="hero-actions">
-                        <button id="start-btn" class="primary-btn pulse">Start Talking Now <i
-                                class="fas fa-play"></i></button>
+                        <button id="start-btn" class="primary-btn pulse">
+                            Start Talking Now <i class="fas fa-play"></i>
+                        </button>
+                        <button id="group-lobby-btn" class="primary-btn group-hero-btn">
+                            <i class="fas fa-users"></i> Group Chat (Friends)
+                        </button>
                         <button id="how-it-works-btn" class="secondary-btn">How it works</button>
                     </div>
 
@@ -94,7 +97,7 @@
                     <div class="key-points">
                         <span><i class="fas fa-bolt"></i> Instant</span>
                         <span><i class="fas fa-user-secret"></i> Anonymous</span>
-                        <span><i class="fas fa-globe"></i> Global</span>
+                        <span><i class="fas fa-video"></i> Voice & Video</span>
                     </div>
                 </section>
 
@@ -102,20 +105,20 @@
                     <h3>How It Works</h3>
                     <div class="steps-grid">
                         <div class="step">
-                            <div class="step-icon"><i class="fas fa-mouse-pointer"></i></div>
-                            <p><strong>1. Join</strong><br>Click Start to enter the queue.</p>
+                            <div class="step-icon"><i class="fas fa-random"></i></div>
+                            <p><strong>1. Random Match</strong><br>Click Start Talking to pair 1-on-1 with a stranger.</p>
                         </div>
                         <div class="step">
-                            <div class="step-icon"><i class="fas fa-network-wired"></i></div>
-                            <p><strong>2. Match</strong><br>Get paired with a speaker.</p>
+                            <div class="step-icon"><i class="fas fa-users"></i></div>
+                            <p><strong>2. Group Chat</strong><br>Create a private room, set a password, invite friends.</p>
                         </div>
                         <div class="step">
-                            <div class="step-icon"><i class="fas fa-comments"></i></div>
-                            <p><strong>3. Chat</strong><br>Start talking immediately.</p>
+                            <div class="step-icon"><i class="fas fa-microphone"></i></div>
+                            <p><strong>3. Crystal Voice</strong><br>Talk with high quality audio in real-time.</p>
                         </div>
                         <div class="step">
-                            <div class="step-icon"><i class="fas fa-forward"></i></div>
-                            <p><strong>4. Next</strong><br>Skip anytime you want.</p>
+                            <div class="step-icon"><i class="fas fa-camera"></i></div>
+                            <p><strong>4. Optional Camera</strong><br>Turn your camera on or off whenever you choose.</p>
                         </div>
                     </div>
                 </section>
@@ -125,8 +128,9 @@
                     <p>Learn faster when you are not shy.</p>
                     <ul class="benefit-list">
                         <li><i class="fas fa-check"></i> Talk without feeling shy</li>
-                        <li><i class="fas fa-check"></i> It's okay to make mistakes</li>
-                        <li><i class="fas fa-check"></i> Improve your English</li>
+                        <li><i class="fas fa-check"></i> Private password-protected rooms for friends</li>
+                        <li><i class="fas fa-check"></i> Independent camera control for privacy</li>
+                        <li><i class="fas fa-check"></i> Improve your English fluency</li>
                     </ul>
                 </section>
 
@@ -160,7 +164,7 @@
                 </footer>
             </div>
 
-            <!-- Waiting Screen -->
+            <!-- Waiting Screen (1-on-1 Random) -->
             <div id="waiting-screen" class="screen hidden">
                 <div class="spinner"></div>
                 <h2>Finding someone for you...</h2>
@@ -168,7 +172,7 @@
                 <button id="cancel-waiting-btn" class="secondary-btn" style="margin-top: 2rem;">Cancel</button>
             </div>
 
-            <!-- Chat Screen -->
+            <!-- Chat Screen (1-on-1 Random) -->
             <div id="chat-screen" class="screen hidden">
                 <div class="chat-header">
                     <div class="chat-header-info">
@@ -187,7 +191,6 @@
                     </div>
                 </div>
 
-                <!-- Audio Call UI -->
                 <!-- Audio Call UI (Floating Glass Bar) -->
                 <div id="call-ui" class="call-status-bar">
                     <div class="avatar-ring">
@@ -226,7 +229,6 @@
                 </div>
 
                 <div id="messages" class="messages-area">
-                    <!-- Messages will appear here -->
                     <div class="system-msg">You are connected! Say hello.</div>
                 </div>
 
@@ -239,15 +241,212 @@
                     </button>
                 </div>
             </div>
+
+            <!-- ============================================== -->
+            <!-- GROUP CHAT LOBBY SCREEN (NEW FEATURE)           -->
+            <!-- ============================================== -->
+            <div id="group-lobby-screen" class="screen hidden scrollable">
+                <div class="group-lobby-container">
+                    <div class="group-nav-bar">
+                        <button id="group-back-home-btn" class="ghost-btn">
+                            <i class="fas fa-arrow-left"></i> Home
+                        </button>
+                        <h2>Group Chat</h2>
+                        <div style="width: 60px;"></div>
+                    </div>
+
+                    <!-- Tabs: Create Group / Join Group -->
+                    <div class="group-tab-switcher">
+                        <button id="tab-create-group" class="group-tab-btn active">
+                            <i class="fas fa-plus-circle"></i> Create Group
+                        </button>
+                        <button id="tab-join-group" class="group-tab-btn">
+                            <i class="fas fa-sign-in-alt"></i> Join Group
+                        </button>
+                    </div>
+
+                    <!-- Create Group Panel -->
+                    <div id="panel-create-group" class="group-panel">
+                        <div class="panel-card">
+                            <div class="panel-badge"><i class="fas fa-shield-alt"></i> Private & Permanent</div>
+                            <h3>Start a New Group</h3>
+                            <p class="panel-desc">Create a secure voice & video room for you and your friends. Your room will remain active even when you leave.</p>
+
+                            <div class="form-group">
+                                <label for="create-group-name"><i class="fas fa-tag"></i> Group Name</label>
+                                <input type="text" id="create-group-name" class="glass-input" placeholder="e.g. English Buddies" maxlength="50" autocomplete="off">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="create-group-password"><i class="fas fa-lock"></i> Group Password</label>
+                                <input type="password" id="create-group-password" class="glass-input" placeholder="At least 4 characters" autocomplete="new-password">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="create-group-username"><i class="fas fa-user"></i> Your Display Name (Optional)</label>
+                                <input type="text" id="create-group-username" class="glass-input" placeholder="e.g. Alex" maxlength="30" autocomplete="off">
+                            </div>
+
+                            <div id="create-group-error" class="form-error hidden"></div>
+
+                            <button id="btn-submit-create-group" class="primary-btn full-width">
+                                <i class="fas fa-sparkles"></i> Create Group Room
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Join Group Panel -->
+                    <div id="panel-join-group" class="group-panel hidden">
+                        <div class="panel-card">
+                            <div class="panel-badge"><i class="fas fa-key"></i> Passcode Required</div>
+                            <h3>Join an Existing Group</h3>
+                            <p class="panel-desc">Enter the permanent group code and password shared by your friend.</p>
+
+                            <div class="form-group">
+                                <label for="join-group-code"><i class="fas fa-hashtag"></i> Group Access Code</label>
+                                <input type="text" id="join-group-code" class="glass-input uppercase-input" placeholder="e.g. GC-7X9K2M" maxlength="12" autocomplete="off">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="join-group-password"><i class="fas fa-lock"></i> Group Password</label>
+                                <input type="password" id="join-group-password" class="glass-input" placeholder="Enter group password" autocomplete="current-password">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="join-group-username"><i class="fas fa-user"></i> Your Display Name (Optional)</label>
+                                <input type="text" id="join-group-username" class="glass-input" placeholder="e.g. Sam" maxlength="30" autocomplete="off">
+                            </div>
+
+                            <div id="join-group-error" class="form-error hidden"></div>
+
+                            <button id="btn-submit-join-group" class="primary-btn full-width">
+                                <i class="fas fa-door-open"></i> Join Group Room
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Group Created Success Modal / Overlay -->
+                    <div id="group-created-modal" class="group-modal hidden">
+                        <div class="modal-card">
+                            <div class="modal-icon-success">
+                                <i class="fas fa-check-circle"></i>
+                            </div>
+                            <h3>Group Created!</h3>
+                            <p class="modal-sub">Share this permanent access code with your friends:</p>
+
+                            <div class="code-share-box">
+                                <span class="share-label">GROUP ACCESS CODE</span>
+                                <div class="code-row">
+                                    <span id="created-code-display" class="group-code-text">GC-XXXXXX</span>
+                                    <button id="btn-copy-code" class="icon-btn-pill" title="Copy code">
+                                        <i class="fas fa-copy"></i> Copy
+                                    </button>
+                                </div>
+                                <span id="copy-confirmation" class="copy-hint hidden">Copied to clipboard!</span>
+                            </div>
+
+                            <div class="password-notice">
+                                <i class="fas fa-info-circle"></i> Friends will need this code AND your chosen password to enter.
+                            </div>
+
+                            <button id="btn-enter-created-group" class="primary-btn full-width">
+                                Enter Voice & Video Room <i class="fas fa-arrow-right"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================================== -->
+            <!-- GROUP VOICE & VIDEO ROOM SCREEN (NEW FEATURE)   -->
+            <!-- ============================================== -->
+            <div id="group-room-screen" class="screen hidden">
+                <!-- Group Header -->
+                <div class="group-room-header">
+                    <div class="group-header-info">
+                        <h3 id="room-group-name">Group Name</h3>
+                        <div class="group-code-pill" id="room-code-badge" title="Click to copy group code">
+                            <i class="fas fa-key"></i> <span id="room-group-code">GC-XXXXXX</span>
+                            <span class="pill-copy-icon"><i class="fas fa-copy"></i></span>
+                        </div>
+                    </div>
+                    <div class="group-header-actions">
+                        <button id="btn-delete-group" class="danger-btn-mini hidden" title="Delete Group Permanently (Owner Only)">
+                            <i class="fas fa-trash-alt"></i> Delete
+                        </button>
+                        <button id="btn-leave-group" class="secondary-btn-mini" title="Leave Group">
+                            <i class="fas fa-sign-out-alt"></i> Leave
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Participants Grid (Responsive Voice & Video Grid) -->
+                <div class="group-participants-container">
+                    <div id="group-participants-grid" class="participants-grid">
+                        <!-- Local participant card (You) -->
+                        <div class="participant-card local-card" id="card-local">
+                            <div class="media-wrapper">
+                                <!-- Avatar view when camera is OFF -->
+                                <div class="avatar-display" id="local-avatar-box">
+                                    <img id="local-avatar-img" class="participant-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=You" alt="You">
+                                    <div class="speaking-halo" id="local-speaking-halo"></div>
+                                </div>
+                                <!-- Video view when camera is ON -->
+                                <video id="local-video-preview" class="participant-video hidden" autoplay playsinline muted></video>
+                                
+                                <div class="status-overlay">
+                                    <span id="local-speaking-pill" class="speaking-pill hidden">Speaking</span>
+                                    <div class="media-badges">
+                                        <span id="local-mic-indicator" class="media-badge mic-on" title="Microphone Active">
+                                            <i class="fas fa-microphone"></i>
+                                        </span>
+                                        <span id="local-cam-indicator" class="media-badge cam-off" title="Camera Disabled">
+                                            <i class="fas fa-video-slash"></i>
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="participant-meta">
+                                <span class="participant-name" id="local-display-name">You</span>
+                            </div>
+                        </div>
+
+                        <!-- Dynamic remote participant cards inserted here by script.js -->
+                    </div>
+                </div>
+
+                <!-- Group Control Bar (Floating Glass Bar) -->
+                <div class="group-controls-bar">
+                    <button id="group-mic-btn" class="control-btn" title="Toggle Microphone">
+                        <i class="fas fa-microphone"></i>
+                        <span class="btn-label">Mute</span>
+                    </button>
+
+                    <button id="group-cam-btn" class="control-btn cam-disabled" title="Toggle Camera">
+                        <i class="fas fa-video-slash"></i>
+                        <span class="btn-label">Camera</span>
+                    </button>
+
+                    <div class="group-status-pill">
+                        <i class="fas fa-users"></i>
+                        <span id="group-online-count">1</span>
+                    </div>
+
+                    <button id="group-leave-control-btn" class="control-btn leave-btn" title="Leave Group">
+                        <i class="fas fa-phone-slash"></i>
+                        <span class="btn-label">Leave</span>
+                    </button>
+                </div>
+            </div>
         </main>
     </div>
 
-    <!-- Remote Audio -->
+    <!-- Hidden audio element for 1-on-1 random chat -->
     <audio id="remote-audio" autoplay></audio>
 
     <!-- Load Socket.IO client library -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="script.js?v=3.0"></script>
+    <script src="script.js?v=3.5"></script>
 </body>
 
 </html>
