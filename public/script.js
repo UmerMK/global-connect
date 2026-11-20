@@ -936,12 +936,31 @@ const liveChatForm = document.getElementById('live-chat-form');
 const liveChatInput = document.getElementById('live-chat-input');
 const btnToggleGifDrawer = document.getElementById('btn-toggle-gif-drawer');
 const gifKeyboardDrawer = document.getElementById('gif-keyboard-drawer');
+const gifDrawerBackdrop = document.getElementById('gif-drawer-backdrop');
 const btnCloseGifDrawer = document.getElementById('btn-close-gif-drawer');
 const gifSheetSearch = document.getElementById('gif-sheet-search');
 const btnClearGifSearch = document.getElementById('btn-clear-gif-search');
 const gifSheetGrid = document.getElementById('gif-sheet-grid');
 const gifTagsContainer = document.getElementById('gif-tags-container');
 let myLocalFunnyAvatar = getRandomFunnyAvatar();
+
+// Stable Identity Map: memberId -> avatarUrl (prevents random avatar re-generation)
+const userAvatarsMap = new Map();
+
+function getStableAvatarForUser(userId, explicitAvatar) {
+    if (explicitAvatar) {
+        if (userId) userAvatarsMap.set(userId, explicitAvatar);
+        return explicitAvatar;
+    }
+    if (userId && userAvatarsMap.has(userId)) {
+        return userAvatarsMap.get(userId);
+    }
+    // Stable seed per user ID so their profile never changes
+    const seed = userId ? encodeURIComponent(userId) : 'Friend';
+    const stableUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=${seed}`;
+    if (userId) userAvatarsMap.set(userId, stableUrl);
+    return stableUrl;
+}
 
 // Disappearing Media Elements
 const groupShareMediaBtn = document.getElementById('group-share-media-btn');
@@ -1091,6 +1110,9 @@ function enterGroupRoom(pin, displayName, ownerToken, onComplete) {
         myGroupMemberId = response.memberId;
         isCurrentGroupOwner = response.isOwner;
 
+        // Register local avatar in stable identity map
+        userAvatarsMap.set(myGroupMemberId, myLocalFunnyAvatar);
+
         // Update UI Header
         if (roomGroupName) roomGroupName.innerText = currentGroupName;
         if (roomPinDisplay) roomPinDisplay.innerText = currentGroupPin;
@@ -1156,7 +1178,8 @@ async function initGroupVoiceRoom(existingMembers) {
     // 2. Establish WebRTC connection with all existing members in room
     if (Array.isArray(existingMembers)) {
         for (const member of existingMembers) {
-            createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, member.avatarUrl);
+            const stableAvatar = getStableAvatarForUser(member.memberId, member.avatarUrl);
+            createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, stableAvatar);
             await createGroupPeerConnection(member.memberId, member.displayName, true);
         }
     }
@@ -1196,6 +1219,7 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
         memberId: targetMemberId,
         displayName: targetDisplayName,
         audioElement: remoteAudioEl,
+        remoteStream: new MediaStream(),
         videoTrack: null,
         audioTrack: null,
         isCameraOn: false,
@@ -1254,9 +1278,13 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
     pc.ontrack = (event) => {
         console.log(`[Group] ontrack from ${targetMemberId}: kind=${event.track.kind}`);
         const currentPeer = groupPeers.get(targetMemberId);
+        if (currentPeer && event.track) {
+            currentPeer.remoteStream.addTrack(event.track);
+        }
 
         if (event.track.kind === 'audio') {
-            remoteAudioEl.srcObject = event.streams[0] || new MediaStream([event.track]);
+            const streamToPlay = (currentPeer && currentPeer.remoteStream) || event.streams[0] || new MediaStream([event.track]);
+            remoteAudioEl.srcObject = streamToPlay;
             remoteAudioEl.play().catch(e => console.warn('Remote audio play blocked:', e));
         } else if (event.track.kind === 'video') {
             const cardVideoEl = document.getElementById(`video-${targetMemberId}`);
@@ -1264,7 +1292,8 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
             const camBadge = document.getElementById(`cam-badge-${targetMemberId}`);
 
             if (cardVideoEl) {
-                cardVideoEl.srcObject = event.streams[0] || new MediaStream([event.track]);
+                const streamToPlay = (currentPeer && currentPeer.remoteStream) || event.streams[0] || new MediaStream([event.track]);
+                cardVideoEl.srcObject = streamToPlay;
                 cardVideoEl.classList.remove('hidden');
                 if (avatarBox) avatarBox.classList.add('hidden');
                 if (camBadge) {
@@ -1302,8 +1331,9 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
 socket.on('group_signal', async ({ from, data }) => {
     let peer = groupPeers.get(from);
     if (!peer) {
-        // If received offer from a peer not yet registered in map, create peer connection
+        // If received offer from a peer not yet registered in map, ensure card exists FIRST then create PC
         console.log(`[Group] Incoming signal from new peer ${from}`);
+        createRemoteParticipantCard(from, 'Friend', false, getStableAvatarForUser(from));
         peer = await createGroupPeerConnection(from, 'Friend', false);
     }
 
@@ -1343,7 +1373,8 @@ socket.on('group_signal', async ({ from, data }) => {
 // A new member joined the group room
 socket.on('group_member_joined', async (member) => {
     console.log(`[Group] New member joined: ${member.displayName} (${member.memberId})`);
-    createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, member.avatarUrl);
+    const stableAvatar = getStableAvatarForUser(member.memberId, member.avatarUrl);
+    createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, stableAvatar);
     updateGroupOnlineCount();
     playSystemSound('connect');
 });
@@ -1377,7 +1408,13 @@ socket.on('group_media_state', ({ memberId, isAudioMuted, isCameraOn }) => {
         const camBadge = document.getElementById(`cam-badge-${memberId}`);
 
         if (isCameraOn) {
-            if (videoEl) videoEl.classList.remove('hidden');
+            if (videoEl) {
+                if (peer.remoteStream && peer.remoteStream.getVideoTracks().length > 0) {
+                    videoEl.srcObject = peer.remoteStream;
+                }
+                videoEl.classList.remove('hidden');
+                videoEl.play().catch(e => console.warn('Play video on state change:', e));
+            }
             if (avatarBox) avatarBox.classList.add('hidden');
             if (camBadge) {
                 camBadge.className = 'media-badge cam-on';
@@ -1386,7 +1423,6 @@ socket.on('group_media_state', ({ memberId, isAudioMuted, isCameraOn }) => {
         } else {
             if (videoEl) {
                 videoEl.classList.add('hidden');
-                videoEl.srcObject = null;
             }
             if (avatarBox) avatarBox.classList.remove('hidden');
             if (camBadge) {
@@ -1620,13 +1656,21 @@ function setLocalSpeaking(speaking) {
 // 7. PARTICIPANT UI MANAGEMENT & DYNAMIC GRID
 // ==========================================
 function createRemoteParticipantCard(memberId, displayName, isOwner, avatarUrl) {
-    if (document.getElementById(`card-${memberId}`)) return;
+    const existingCard = document.getElementById(`card-${memberId}`);
+    if (existingCard) {
+        // If card exists but had temporary display name, update it
+        const nameEl = existingCard.querySelector('.participant-name');
+        if (nameEl && displayName && displayName !== 'Friend') {
+            nameEl.innerText = `${displayName}${isOwner ? ' (Host)' : ''}`;
+        }
+        return;
+    }
 
     const card = document.createElement('div');
     card.className = 'participant-card';
     card.id = `card-${memberId}`;
 
-    const avatarSrc = avatarUrl || getRandomFunnyAvatar();
+    const avatarSrc = getStableAvatarForUser(memberId, avatarUrl);
 
     card.innerHTML = `
         <div class="media-wrapper">
@@ -1960,69 +2004,73 @@ function escapeHtml(str) {
 
 const CURATED_GIFS = {
     trending: [
-        'https://media.tenor.com/2KkMvG-m94AAAAAM/cat-dance-dancing-cat.gif',
-        'https://media.tenor.com/gK61kM58eJ0AAAAM/party-parrot-dance.gif',
-        'https://media.tenor.com/2UbhR8hR3_wAAAAM/vibing-cat-vibing.gif',
-        'https://media.tenor.com/h5TjE3i3uRkAAAAM/shocked-surprised.gif',
-        'https://media.tenor.com/uG3jJv5oU3wAAAAM/leonardo-dicaprio-cheers.gif',
-        'https://media.tenor.com/hK-6156eHqUAAAAM/mind-blown.gif',
-        'https://media.tenor.com/j1_RslCqK7gAAAAM/thumbs-up-okay.gif',
-        'https://media.tenor.com/T0bO-x21UFAAAAAM/lets-go-hype.gif'
+        'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif',
+        'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif',
+        'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
+        'https://media.giphy.com/media/DhstvI3CH0EGtQ80IL/giphy.gif',
+        'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif',
+        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif'
     ],
     laugh: [
-        'https://media.tenor.com/2v3b9r9KSmcAAAAM/laughing-lol.gif',
-        'https://media.tenor.com/d_y7t7Y2Fv0AAAAM/lmao-dead.gif',
-        'https://media.tenor.com/M6q290kQ1jEAAAAM/minions-laughing.gif',
-        'https://media.tenor.com/yvjW6y83j-4AAAAM/rick-roll-laugh.gif',
-        'https://media.tenor.com/1o2LgSgN0L4AAAAM/baby-laughing.gif',
-        'https://media.tenor.com/V7G39z5e2sUAAAAM/snicker-funny.gif'
+        'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif',
+        'https://media.giphy.com/media/10JhviFuU2gWS6W/giphy.gif',
+        'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif',
+        'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif'
     ],
     dance: [
-        'https://media.tenor.com/2KkMvG-m94AAAAAM/cat-dance-dancing-cat.gif',
-        'https://media.tenor.com/gK61kM58eJ0AAAAM/party-parrot-dance.gif',
-        'https://media.tenor.com/N6d_uT2FjB0AAAAM/happy-dance-moves.gif',
-        'https://media.tenor.com/kS9wP_N1Q8sAAAAM/groot-dancing.gif',
-        'https://media.tenor.com/V8h38uA_jYAAAAAM/snoop-dogg-dance.gif',
-        'https://media.tenor.com/vH97Z7qO96wAAAAM/spiderman-dance.gif'
+        'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif',
+        'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif',
+        'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif',
+        'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif'
     ],
     fire: [
-        'https://media.tenor.com/2J3-Q4u7kY0AAAAM/fire-flame.gif',
-        'https://media.tenor.com/fL8kF3aP96wAAAAM/this-is-fine-fire.gif',
-        'https://media.tenor.com/uG3jJv5oU3wAAAAM/leonardo-dicaprio-cheers.gif',
-        'https://media.tenor.com/Z4wP6u57FwAAAAAM/super-saiyan-fire.gif',
-        'https://media.tenor.com/yK5jW8q3tLAAAAAM/lit-fire.gif'
+        'https://media.giphy.com/media/QMHoU66sBXCAHonOmG/giphy.gif',
+        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif'
     ],
     love: [
-        'https://media.tenor.com/r_zE89iW3pAAAAAM/sending-love-heart.gif',
-        'https://media.tenor.com/w9U1sF2M8pAAAAAM/cat-love-heart.gif',
-        'https://media.tenor.com/Z5o7B_1mYm8AAAAM/hugs-love.gif',
-        'https://media.tenor.com/Fj_2wS_J5kIAAAAM/kisses-sweet.gif'
+        'https://media.giphy.com/media/3oriO04qxVwuM5ZwXY/giphy.gif',
+        'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif'
     ],
     anime: [
-        'https://media.tenor.com/8-m4Uo12_2oAAAAM/naruto-run.gif',
-        'https://media.tenor.com/bZ2_t1Yk498AAAAM/anime-shock.gif',
-        'https://media.tenor.com/g5G6G5qFz_sAAAAM/anya-spy-x-family-heh.gif',
-        'https://media.tenor.com/T0bO-x21UFAAAAAM/lets-go-hype.gif',
-        'https://media.tenor.com/V1c5E6_u59cAAAAM/goku-powerup.gif'
+        'https://media.giphy.com/media/7kn27lnYSAQ9O/giphy.gif',
+        'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif'
     ],
     meme: [
-        'https://media.tenor.com/fL8kF3aP96wAAAAM/this-is-fine-fire.gif',
-        'https://media.tenor.com/2UbhR8hR3_wAAAAM/vibing-cat-vibing.gif',
-        'https://media.tenor.com/uG3jJv5oU3wAAAAM/leonardo-dicaprio-cheers.gif',
-        'https://media.tenor.com/d_y7t7Y2Fv0AAAAM/lmao-dead.gif',
-        'https://media.tenor.com/h5TjE3i3uRkAAAAM/shocked-surprised.gif'
+        'https://media.giphy.com/media/QMHoU66sBXCAHonOmG/giphy.gif',
+        'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif',
+        'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
+        'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif'
     ],
     clap: [
-        'https://media.tenor.com/39wP9z6qR5sAAAAM/applause-clapping.gif',
-        'https://media.tenor.com/71_65B3pZ_AAAAAM/leonardo-clapping.gif',
-        'https://media.tenor.com/x0q4N1pXmHkAAAAM/obama-clap.gif'
+        'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif',
+        'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif'
     ],
     wow: [
-        'https://media.tenor.com/hK-6156eHqUAAAAM/mind-blown.gif',
-        'https://media.tenor.com/h5TjE3i3uRkAAAAM/shocked-surprised.gif',
-        'https://media.tenor.com/k6K5K4mP29cAAAAM/omg-wow.gif'
+        'https://media.giphy.com/media/7kn27lnYSAQ9O/giphy.gif',
+        'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
+        'https://media.giphy.com/media/DhstvI3CH0EGtQ80IL/giphy.gif'
     ]
 };
+
+const GIF_METADATA = [
+    { url: 'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif', tags: ['dance', 'party', 'parrot', 'groove', 'trending', 'fun'] },
+    { url: 'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif', tags: ['cat', 'vibing', 'vibe', 'cute', 'meme', 'trending'] },
+    { url: 'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif', tags: ['leonardo', 'dicaprio', 'cheers', 'toast', 'celebrate', 'trending', 'meme', 'wow'] },
+    { url: 'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif', tags: ['laugh', 'lol', 'haha', 'funny', 'joke', 'meme'] },
+    { url: 'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif', tags: ['dance', 'groove', 'cool', 'trending'] },
+    { url: 'https://media.giphy.com/media/QMHoU66sBXCAHonOmG/giphy.gif', tags: ['fire', 'this is fine', 'fine', 'burn', 'flame', 'meme'] },
+    { url: 'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif', tags: ['fire', 'cheers', 'greatsby', 'toast', 'lit'] },
+    { url: 'https://media.giphy.com/media/7kn27lnYSAQ9O/giphy.gif', tags: ['anime', 'wow', 'shocked', 'hype', 'eyes'] },
+    { url: 'https://media.giphy.com/media/DhstvI3CH0EGtQ80IL/giphy.gif', tags: ['thumbs up', 'ok', 'good', 'trending', 'wow', 'hype'] },
+    { url: 'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif', tags: ['laugh', 'smile', 'happy', 'cheers'] },
+    { url: 'https://media.giphy.com/media/10JhviFuU2gWS6W/giphy.gif', tags: ['laugh', 'lol', 'haha', 'giggle'] },
+    { url: 'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif', tags: ['dance', 'happy', 'laugh', 'joy'] },
+    { url: 'https://media.giphy.com/media/3oriO04qxVwuM5ZwXY/giphy.gif', tags: ['love', 'heart', 'hug', 'affection', 'sweet'] },
+    { url: 'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif', tags: ['love', 'hugs', 'cuddle', 'sweet'] },
+    { url: 'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif', tags: ['anime', 'excited', 'energy', 'hype'] },
+    { url: 'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif', tags: ['clap', 'applause', 'bravo', 'congrats'] },
+    { url: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif', tags: ['clap', 'applause', 'respect'] }
+];
 
 let currentGifCategory = 'trending';
 let gifSearchDebounceTimer = null;
@@ -2053,7 +2101,8 @@ function appendLiveChatMessage(msg) {
     const bubble = document.createElement('div');
     bubble.className = 'live-chat-bubble';
 
-    const avatarSrc = msg.senderAvatar || getRandomFunnyAvatar();
+    // Stable identity avatar per sender
+    const avatarSrc = getStableAvatarForUser(msg.senderId, msg.senderAvatar);
     const cleanName = escapeHtml(msg.senderName || 'Friend');
 
     let innerContent = `<span class="live-chat-username">${cleanName}</span>`;
@@ -2083,11 +2132,18 @@ function appendLiveChatMessage(msg) {
 }
 
 // GIF Keyboard Drawer Controls
+function closeGifDrawer() {
+    if (gifKeyboardDrawer) gifKeyboardDrawer.classList.remove('is-open');
+    if (btnToggleGifDrawer) btnToggleGifDrawer.classList.remove('active');
+    if (gifDrawerBackdrop) gifDrawerBackdrop.classList.add('hidden');
+}
+
 if (btnToggleGifDrawer) {
     btnToggleGifDrawer.addEventListener('click', () => {
         if (!gifKeyboardDrawer) return;
         const isOpen = gifKeyboardDrawer.classList.toggle('is-open');
         btnToggleGifDrawer.classList.toggle('active', isOpen);
+        if (gifDrawerBackdrop) gifDrawerBackdrop.classList.toggle('hidden', !isOpen);
         if (isOpen && (!gifSheetGrid.children.length || gifSheetGrid.querySelector('.gif-loading-state'))) {
             loadGifsForCategory(currentGifCategory);
         }
@@ -2095,10 +2151,11 @@ if (btnToggleGifDrawer) {
 }
 
 if (btnCloseGifDrawer) {
-    btnCloseGifDrawer.addEventListener('click', () => {
-        if (gifKeyboardDrawer) gifKeyboardDrawer.classList.remove('is-open');
-        if (btnToggleGifDrawer) btnToggleGifDrawer.classList.remove('active');
-    });
+    btnCloseGifDrawer.addEventListener('click', closeGifDrawer);
+}
+
+if (gifDrawerBackdrop) {
+    gifDrawerBackdrop.addEventListener('click', closeGifDrawer);
 }
 
 // Category tag chips
@@ -2116,7 +2173,7 @@ if (gifTagsContainer) {
     });
 }
 
-// Search input in GIF drawer with Tenor integration
+// Instant keyword & tag search in GIF drawer
 if (gifSheetSearch) {
     gifSheetSearch.addEventListener('input', () => {
         const query = gifSheetSearch.value.trim();
@@ -2126,11 +2183,11 @@ if (gifSheetSearch) {
         clearTimeout(gifSearchDebounceTimer);
         gifSearchDebounceTimer = setTimeout(() => {
             if (query) {
-                searchTenorGifs(query);
+                searchGifs(query);
             } else {
                 loadGifsForCategory(currentGifCategory);
             }
-        }, 350);
+        }, 150);
     });
 }
 
@@ -2147,30 +2204,23 @@ function loadGifsForCategory(category) {
     renderGifsInSheet(gifs);
 }
 
-async function searchTenorGifs(query) {
+function searchGifs(query) {
     if (!gifSheetGrid) return;
-    gifSheetGrid.innerHTML = '<div class="gif-loading-state"><i class="fas fa-spinner fa-spin"></i> Searching GIFs...</div>';
-
-    try {
-        const url = `https://tenor.googleapis.com/v2/search?q=${encodeURIComponent(query)}&key=LIVDSRZULELA&limit=18`;
-        const res = await fetch(url);
-        if (res.ok) {
-            const data = await res.json();
-            if (data.results && data.results.length > 0) {
-                const gifUrls = data.results.map(r => {
-                    return (r.media_formats && (r.media_formats.tinygif?.url || r.media_formats.gif?.url)) || r.itemurl;
-                }).filter(Boolean);
-                renderGifsInSheet(gifUrls);
-                return;
-            }
-        }
-    } catch (e) {
-        console.warn('Tenor API fetch fallback:', e);
+    const cleanQuery = query.toLowerCase().trim();
+    if (!cleanQuery) {
+        loadGifsForCategory(currentGifCategory);
+        return;
     }
 
-    // Fallback: match curated GIFs
-    const allCurated = Object.values(CURATED_GIFS).flat();
-    renderGifsInSheet(allCurated);
+    const matched = GIF_METADATA.filter(item => {
+        return item.tags.some(t => t.includes(cleanQuery) || cleanQuery.includes(t));
+    }).map(i => i.url);
+
+    if (matched.length > 0) {
+        renderGifsInSheet(matched);
+    } else {
+        renderGifsInSheet(CURATED_GIFS.trending);
+    }
 }
 
 function renderGifsInSheet(gifUrls) {
@@ -2195,7 +2245,5 @@ function renderGifsInSheet(gifUrls) {
 
 function selectAndSendGif(gifUrl) {
     socket.emit('group_chat_message', { gifUrl: gifUrl });
-    // Smoothly close drawer
-    if (gifKeyboardDrawer) gifKeyboardDrawer.classList.remove('is-open');
-    if (btnToggleGifDrawer) btnToggleGifDrawer.classList.remove('active');
+    closeGifDrawer();
 }

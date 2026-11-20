@@ -292,6 +292,7 @@ io.on('connection', (socket) => {
             id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
             senderId: socket.id,
             senderName: socket.displayName || 'Friend',
+            senderAvatar: socket.userAvatar || null,
             text: text ? String(text).slice(0, 200) : '',
             gifUrl: gifUrl || null,
             timestamp: Date.now()

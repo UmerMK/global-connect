@@ -1476,7 +1476,7 @@ main {
     flex-direction: column;
     gap: 6px;
     z-index: 18;
-    pointer-events: auto;
+    pointer-events: none; /* Allows clicks/taps to pass through to underlying video */
     mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 80%, rgba(0, 0, 0, 0) 100%);
     -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 80%, rgba(0, 0, 0, 0) 100%);
     scrollbar-width: none;
@@ -1499,6 +1499,7 @@ main {
     align-items: center;
     gap: 6px;
     max-width: 90%;
+    pointer-events: auto;
     animation: liveFloatUp 0.3s ease-out;
 }
 
@@ -1518,6 +1519,7 @@ main {
     gap: 8px;
     max-width: 95%;
     width: fit-content;
+    pointer-events: auto; /* Chat bubbles themselves are interactive */
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
     animation: liveFloatUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -1573,6 +1575,20 @@ main {
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
 }
 
+/* Backdrop for GIF Keyboard Drawer */
+.gif-drawer-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(2px);
+    z-index: 28;
+    transition: opacity 0.2s ease;
+}
+
+.gif-drawer-backdrop.hidden {
+    display: none;
+}
+
 /* Sliding Keyboard-Style GIF Drawer */
 .gif-keyboard-sheet {
     position: absolute;
@@ -1589,12 +1605,18 @@ main {
     flex-direction: column;
     z-index: 30;
     transform: translateY(115%);
-    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease, visibility 0.3s;
     box-shadow: 0 -10px 35px rgba(0, 0, 0, 0.6);
 }
 
 .gif-keyboard-sheet.is-open {
     transform: translateY(0);
+    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 .gif-sheet-handle-bar {
