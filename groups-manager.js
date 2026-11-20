@@ -6,13 +6,8 @@ const crypto = require('crypto');
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const STORAGE_FILE = path.join(DATA_DIR, 'groups.json');
 
-// In-memory cache: groupKey (lowercase name) -> group object
+// In-memory cache: pin -> group object
 let groupsMap = new Map();
-
-// Rate limiting: key -> { attempts, lockedUntil }
-const rateLimitMap = new Map();
-const MAX_ATTEMPTS = 5;
-const LOCKOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 function ensureStorageDir() {
     try {
@@ -33,13 +28,12 @@ function loadGroups() {
             if (Array.isArray(data)) {
                 groupsMap.clear();
                 data.forEach(g => {
-                    if (g && g.key) {
-                        groupsMap.set(g.key, g);
-                    } else if (g && g.name) {
-                        groupsMap.set(g.name.trim().toLowerCase(), g);
+                    const pinKey = normalizePin(g.pin || g.key || g.code);
+                    if (pinKey) {
+                        groupsMap.set(pinKey, { ...g, pin: pinKey });
                     }
                 });
-                console.log(`[Storage] Loaded ${groupsMap.size} persistent groups from ${STORAGE_FILE}`);
+                console.log(`[Storage] Loaded ${groupsMap.size} persistent rooms from ${STORAGE_FILE}`);
             }
         } else {
             console.log(`[Storage] No existing groups file found. Starting fresh at ${STORAGE_FILE}`);
@@ -61,137 +55,72 @@ function saveGroups() {
     }
 }
 
-function normalizeKey(name) {
-    if (!name || typeof name !== 'string') return '';
-    return name.trim().toLowerCase();
+function normalizePin(pin) {
+    if (!pin) return '';
+    return String(pin).trim().toLowerCase();
 }
 
-function hashPassword(password, salt) {
-    return crypto.scryptSync(password, salt, 64).toString('hex');
-}
+// Create or access group by PIN
+function createGroup(pin, name) {
+    const cleanPin = normalizePin(pin);
+    if (!cleanPin || cleanPin.length < 3) {
+        throw new Error('PIN must be at least 3-4 digits or characters.');
+    }
 
-function verifyHash(password, salt, expectedHash) {
-    const hash = crypto.scryptSync(password, salt, 64);
-    const expected = Buffer.from(expectedHash, 'hex');
-    if (hash.length !== expected.length) return false;
-    return crypto.timingSafeEqual(hash, expected);
-}
+    const cleanName = (name && typeof name === 'string' && name.trim().slice(0, 40)) || `Room ${cleanPin}`;
 
-function checkRateLimit(key) {
-    const now = Date.now();
-    const entry = rateLimitMap.get(key);
-    if (!entry) return { allowed: true };
-
-    if (entry.lockedUntil && now < entry.lockedUntil) {
-        const remainingSec = Math.ceil((entry.lockedUntil - now) / 1000);
+    // If room already exists with this PIN, return it with owner status
+    if (groupsMap.has(cleanPin)) {
+        const existing = groupsMap.get(cleanPin);
+        if (name && name.trim()) existing.name = cleanName;
+        saveGroups();
         return {
-            allowed: false,
-            error: `Too many failed attempts. Locked for ${remainingSec} seconds.`
+            pin: existing.pin,
+            name: existing.name,
+            ownerToken: existing.ownerToken,
+            createdAt: existing.createdAt
         };
     }
 
-    if (entry.lockedUntil && now >= entry.lockedUntil) {
-        rateLimitMap.delete(key);
-        return { allowed: true };
-    }
-
-    return { allowed: true };
-}
-
-function recordAttempt(key, success) {
-    const now = Date.now();
-    if (success) {
-        rateLimitMap.delete(key);
-        return;
-    }
-
-    const entry = rateLimitMap.get(key) || { attempts: 0, lockedUntil: 0 };
-    entry.attempts++;
-    if (entry.attempts >= MAX_ATTEMPTS) {
-        entry.lockedUntil = now + LOCKOUT_MS;
-    }
-    rateLimitMap.set(key, entry);
-}
-
-// Create new group by Name + 4-digit Password
-function createGroup(name, password) {
-    if (!name || typeof name !== 'string' || name.trim().length === 0) {
-        throw new Error('Please enter a group name.');
-    }
-    const cleanName = name.trim().slice(0, 50);
-    const key = normalizeKey(cleanName);
-
-    if (key.length < 2) {
-        throw new Error('Group name must be at least 2 characters.');
-    }
-
-    if (groupsMap.has(key)) {
-        throw new Error(`Group "${cleanName}" already exists. Please pick another name or join it.`);
-    }
-
-    if (!password || typeof password !== 'string' || password.length < 4) {
-        throw new Error('Password must be at least 4 digits/characters.');
-    }
-
-    const salt = crypto.randomBytes(16).toString('hex');
-    const passwordHash = hashPassword(password, salt);
     const ownerToken = crypto.randomBytes(32).toString('hex');
-
     const group = {
         id: `grp_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
-        key: key,
+        pin: cleanPin,
         name: cleanName,
-        salt: salt,
-        passwordHash: passwordHash,
         ownerToken: ownerToken,
         createdAt: new Date().toISOString()
     };
 
-    groupsMap.set(key, group);
+    groupsMap.set(cleanPin, group);
     saveGroups();
 
     return {
-        key: group.key,
+        pin: group.pin,
         name: group.name,
         ownerToken: ownerToken,
         createdAt: group.createdAt
     };
 }
 
-// Verify group by Name + Password
-function verifyGroup(name, password, clientIp) {
-    if (!name || typeof name !== 'string') {
-        return { success: false, error: 'Group name is required.' };
-    }
-    const key = normalizeKey(name);
-
-    const rateKey = `${clientIp || 'client'}_${key}`;
-    const rateCheck = checkRateLimit(rateKey);
-    if (!rateCheck.allowed) {
-        return { success: false, error: rateCheck.error };
+// Verify & find group by PIN only
+function verifyGroup(pin) {
+    const cleanPin = normalizePin(pin);
+    if (!cleanPin) {
+        return { success: false, error: 'Please enter your 4-digit PIN.' };
     }
 
-    const group = groupsMap.get(key);
+    const group = groupsMap.get(cleanPin);
     if (!group) {
-        recordAttempt(rateKey, false);
-        return { success: false, error: `Group "${name.trim()}" not found. Please check the name.` };
+        return {
+            success: false,
+            error: `Room with PIN "${cleanPin}" not found. Create it first!`
+        };
     }
 
-    if (!password || typeof password !== 'string') {
-        return { success: false, error: 'Password is required.' };
-    }
-
-    const matches = verifyHash(password, group.salt, group.passwordHash);
-    if (!matches) {
-        recordAttempt(rateKey, false);
-        return { success: false, error: 'Incorrect 4-digit password.' };
-    }
-
-    recordAttempt(rateKey, true);
     return {
         success: true,
         group: {
-            key: group.key,
+            pin: group.pin,
             name: group.name,
             createdAt: group.createdAt
         }
@@ -199,37 +128,39 @@ function verifyGroup(name, password, clientIp) {
 }
 
 // Delete group (owner only)
-function deleteGroup(name, ownerToken) {
-    if (!name || !ownerToken) return { success: false, error: 'Missing group name or owner token.' };
-    const key = normalizeKey(name);
-    const group = groupsMap.get(key);
-    if (!group) return { success: false, error: 'Group not found.' };
+function deleteGroup(pin, ownerToken) {
+    const cleanPin = normalizePin(pin);
+    if (!cleanPin || !ownerToken) return { success: false, error: 'Missing PIN or owner token.' };
+    const group = groupsMap.get(cleanPin);
+    if (!group) return { success: false, error: 'Room not found.' };
 
     const tokenBuf = Buffer.from(ownerToken);
     const expectedBuf = Buffer.from(group.ownerToken);
     if (tokenBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
-        return { success: false, error: 'Unauthorized: only the group owner can delete this group.' };
+        return { success: false, error: 'Unauthorized: only the room owner can delete this group.' };
     }
 
-    groupsMap.delete(key);
+    groupsMap.delete(cleanPin);
     saveGroups();
     return { success: true };
 }
 
-function getGroupPublic(name) {
-    if (!name) return null;
-    const group = groupsMap.get(normalizeKey(name));
+function getGroupPublic(pin) {
+    const cleanPin = normalizePin(pin);
+    if (!cleanPin) return null;
+    const group = groupsMap.get(cleanPin);
     if (!group) return null;
     return {
-        key: group.key,
+        pin: group.pin,
         name: group.name,
         createdAt: group.createdAt
     };
 }
 
-function isOwner(name, ownerToken) {
-    if (!name || !ownerToken) return false;
-    const group = groupsMap.get(normalizeKey(name));
+function isOwner(pin, ownerToken) {
+    const cleanPin = normalizePin(pin);
+    if (!cleanPin || !ownerToken) return false;
+    const group = groupsMap.get(cleanPin);
     if (!group) return false;
     const tokenBuf = Buffer.from(ownerToken);
     const expectedBuf = Buffer.from(group.ownerToken);

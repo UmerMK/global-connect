@@ -711,21 +711,23 @@ let groupAudioStream = null;
 let groupVideoStream = null;
 let isGroupAudioMuted = false;
 let isGroupCameraOn = false;
-let currentGroupKey = null;
+let currentGroupPin = null;
 let currentGroupName = null;
 let myGroupMemberId = null;
 let isCurrentGroupOwner = false;
 let groupSpeechInterval = null;
 let isSpeakingState = false;
 let groupAudioContext = null;
+let selectedMediaDataUrl = null;
+let mediaCountdownTimer = null;
 
 // DOM Elements - Group Lobby
 const groupLobbyBtn = document.getElementById('group-lobby-btn');
 const groupBackHomeBtn = document.getElementById('group-back-home-btn');
-const tabCreateGroup = document.getElementById('tab-create-group');
-const tabJoinGroup = document.getElementById('tab-join-group');
 const panelCreateGroup = document.getElementById('panel-create-group');
 const panelJoinGroup = document.getElementById('panel-join-group');
+const linkShowCreate = document.getElementById('link-show-create');
+const linkShowJoin = document.getElementById('link-show-join');
 
 // Form Elements - Create
 const createGroupNameInput = document.getElementById('create-group-name');
@@ -734,8 +736,7 @@ const createGroupUserInput = document.getElementById('create-group-username');
 const btnSubmitCreateGroup = document.getElementById('btn-submit-create-group');
 const createGroupError = document.getElementById('create-group-error');
 
-// Form Elements - Join
-const joinGroupNameInput = document.getElementById('join-group-name');
+// Form Elements - Join (Default View)
 const joinGroupPassInput = document.getElementById('join-group-password');
 const joinGroupUserInput = document.getElementById('join-group-username');
 const btnSubmitJoinGroup = document.getElementById('btn-submit-join-group');
@@ -743,6 +744,7 @@ const joinGroupError = document.getElementById('join-group-error');
 
 // Room Elements
 const roomGroupName = document.getElementById('room-group-name');
+const roomPinDisplay = document.getElementById('room-pin-display');
 const btnDeleteGroup = document.getElementById('btn-delete-group');
 const btnLeaveGroup = document.getElementById('btn-leave-group');
 const groupLeaveControlBtn = document.getElementById('group-leave-control-btn');
@@ -757,11 +759,31 @@ const groupMicBtn = document.getElementById('group-mic-btn');
 const groupCamBtn = document.getElementById('group-cam-btn');
 const groupOnlineCount = document.getElementById('group-online-count');
 
+// Disappearing Media Elements
+const groupShareMediaBtn = document.getElementById('group-share-media-btn');
+const shareMediaModal = document.getElementById('share-media-modal');
+const closeShareModalBtn = document.getElementById('close-share-modal-btn');
+const mediaFileInput = document.getElementById('media-file-input');
+const mediaUrlInput = document.getElementById('media-url-input');
+const fileNamePreview = document.getElementById('file-name-preview');
+const btnSendMedia = document.getElementById('btn-send-media');
+const disappearingMediaOverlay = document.getElementById('disappearing-media-overlay');
+const mediaPopupSender = document.getElementById('media-popup-sender');
+const mediaCountdownSec = document.getElementById('media-countdown-sec');
+const mediaPopupImg = document.getElementById('media-popup-img');
+const mediaProgressFill = document.getElementById('media-progress-fill');
+const closeMediaPopupBtn = document.getElementById('close-media-popup-btn');
+
 // ==========================================
-// 1. NAVIGATION & TAB SWITCHING
+// 1. NAVIGATION & SWITCHING (JOIN IS DEFAULT)
 // ==========================================
 if (groupLobbyBtn) {
     groupLobbyBtn.addEventListener('click', () => {
+        // Show Join Panel by default every time!
+        if (panelJoinGroup) panelJoinGroup.classList.remove('hidden');
+        if (panelCreateGroup) panelCreateGroup.classList.add('hidden');
+        if (joinGroupError) joinGroupError.classList.add('hidden');
+        if (createGroupError) createGroupError.classList.add('hidden');
         showScreen('group-lobby-screen');
     });
 }
@@ -772,89 +794,37 @@ if (groupBackHomeBtn) {
     });
 }
 
-if (tabCreateGroup && tabJoinGroup) {
-    tabCreateGroup.addEventListener('click', () => {
-        tabCreateGroup.classList.add('active');
-        tabJoinGroup.classList.remove('active');
-        panelCreateGroup.classList.remove('hidden');
+// Switch to Create View
+if (linkShowCreate) {
+    linkShowCreate.addEventListener('click', () => {
         panelJoinGroup.classList.add('hidden');
+        panelCreateGroup.classList.remove('hidden');
         if (createGroupError) createGroupError.classList.add('hidden');
     });
+}
 
-    tabJoinGroup.addEventListener('click', () => {
-        tabJoinGroup.classList.add('active');
-        tabCreateGroup.classList.remove('active');
-        panelJoinGroup.classList.remove('hidden');
+// Switch back to Join View
+if (linkShowJoin) {
+    linkShowJoin.addEventListener('click', () => {
         panelCreateGroup.classList.add('hidden');
+        panelJoinGroup.classList.remove('hidden');
         if (joinGroupError) joinGroupError.classList.add('hidden');
     });
 }
 
 // ==========================================
-// 2. CREATE GROUP
-// ==========================================
-if (btnSubmitCreateGroup) {
-    btnSubmitCreateGroup.addEventListener('click', handleCreateGroup);
-}
-
-function handleCreateGroup() {
-    const name = createGroupNameInput.value.trim();
-    const password = createGroupPassInput.value;
-    const displayName = createGroupUserInput.value.trim() || 'Host';
-
-    if (!name) {
-        showFormError(createGroupError, 'Please enter a group name.');
-        return;
-    }
-    if (!password || password.length < 4) {
-        showFormError(createGroupError, 'Password must be at least 4 digits.');
-        return;
-    }
-
-    createGroupError.classList.add('hidden');
-    btnSubmitCreateGroup.disabled = true;
-    btnSubmitCreateGroup.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating Room...';
-
-    socket.emit('group_create', { name, password }, (res) => {
-        btnSubmitCreateGroup.disabled = false;
-        btnSubmitCreateGroup.innerHTML = '<i class="fas fa-sparkles"></i> Create & Enter Group Room';
-
-        if (!res || !res.success) {
-            showFormError(createGroupError, (res && res.error) || 'Failed to create group.');
-            return;
-        }
-
-        const group = res.group;
-        // Persist creator's owner token in localStorage
-        try {
-            localStorage.setItem(`gc_owner_${group.key}`, group.ownerToken);
-        } catch (e) {
-            console.warn('localStorage not accessible:', e);
-        }
-
-        // Enter group room immediately
-        enterGroupRoom(group.name, password, displayName, group.ownerToken);
-    });
-}
-
-// ==========================================
-// 3. JOIN GROUP
+// 2. JOIN GROUP (DEFAULT PRIMARY ACTION)
 // ==========================================
 if (btnSubmitJoinGroup) {
     btnSubmitJoinGroup.addEventListener('click', handleJoinGroup);
 }
 
 function handleJoinGroup() {
-    const name = joinGroupNameInput.value.trim();
-    const password = joinGroupPassInput.value;
+    const pin = joinGroupPassInput.value.trim();
     const displayName = joinGroupUserInput.value.trim() || 'Friend';
 
-    if (!name) {
-        showFormError(joinGroupError, 'Please enter the group name.');
-        return;
-    }
-    if (!password) {
-        showFormError(joinGroupError, 'Please enter the 4-digit password.');
+    if (!pin) {
+        showFormError(joinGroupError, 'Please enter the 4-digit PIN.');
         return;
     }
 
@@ -862,37 +832,80 @@ function handleJoinGroup() {
     btnSubmitJoinGroup.disabled = true;
     btnSubmitJoinGroup.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Joining...';
 
-    // Check if this browser has an ownerToken saved for this group
+    // Check if this browser has an ownerToken saved for this PIN
     let ownerToken = null;
     try {
-        ownerToken = localStorage.getItem(`gc_owner_${name.toLowerCase()}`);
+        ownerToken = localStorage.getItem(`gc_owner_${pin.toLowerCase()}`);
     } catch (e) {}
 
-    enterGroupRoom(name, password, displayName, ownerToken, () => {
+    enterGroupRoom(pin, displayName, ownerToken, () => {
         btnSubmitJoinGroup.disabled = false;
-        btnSubmitJoinGroup.innerHTML = '<i class="fas fa-door-open"></i> Join Group Room';
+        btnSubmitJoinGroup.innerHTML = '<i class="fas fa-sign-in-alt"></i> Join Room Now';
+    });
+}
+
+// ==========================================
+// 3. CREATE GROUP (SECONDARY ACTION)
+// ==========================================
+if (btnSubmitCreateGroup) {
+    btnSubmitCreateGroup.addEventListener('click', handleCreateGroup);
+}
+
+function handleCreateGroup() {
+    const pin = createGroupPassInput.value.trim();
+    const name = createGroupNameInput.value.trim();
+    const displayName = createGroupUserInput.value.trim() || 'Host';
+
+    if (!pin || pin.length < 3) {
+        showFormError(createGroupError, 'Please enter a 4-digit PIN.');
+        return;
+    }
+
+    createGroupError.classList.add('hidden');
+    btnSubmitCreateGroup.disabled = true;
+    btnSubmitCreateGroup.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating Room...';
+
+    socket.emit('group_create', { pin, name }, (res) => {
+        btnSubmitCreateGroup.disabled = false;
+        btnSubmitCreateGroup.innerHTML = '<i class="fas fa-sparkles"></i> Create & Enter Room';
+
+        if (!res || !res.success) {
+            showFormError(createGroupError, (res && res.error) || 'Failed to create room.');
+            return;
+        }
+
+        const group = res.group;
+        try {
+            localStorage.setItem(`gc_owner_${group.pin}`, group.ownerToken);
+        } catch (e) {
+            console.warn('localStorage not accessible:', e);
+        }
+
+        // Enter the room immediately
+        enterGroupRoom(group.pin, displayName, group.ownerToken);
     });
 }
 
 // Helper: Enter group room
-function enterGroupRoom(name, password, displayName, ownerToken, onComplete) {
-    socket.emit('group_join', { name, password, displayName, ownerToken }, async (response) => {
+function enterGroupRoom(pin, displayName, ownerToken, onComplete) {
+    socket.emit('group_join', { pin, displayName, ownerToken }, async (response) => {
         if (typeof onComplete === 'function') onComplete();
 
         if (!response || !response.success) {
             const errEl = (panelJoinGroup.classList.contains('hidden')) ? createGroupError : joinGroupError;
-            showFormError(errEl, (response && response.error) || 'Failed to join group.');
+            showFormError(errEl, (response && response.error) || 'Failed to join room.');
             return;
         }
 
         // Successfully joined group on server
-        currentGroupKey = response.group.key;
+        currentGroupPin = response.group.pin;
         currentGroupName = response.group.name;
         myGroupMemberId = response.memberId;
         isCurrentGroupOwner = response.isOwner;
 
         // Update UI Header
-        roomGroupName.innerText = currentGroupName;
+        if (roomGroupName) roomGroupName.innerText = currentGroupName;
+        if (roomPinDisplay) roomPinDisplay.innerText = currentGroupPin;
         localDisplayName.innerText = `${response.displayName}${response.isOwner ? ' (Host)' : ''}`;
         localAvatarImg.src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${response.memberId}`;
 
@@ -1547,4 +1560,137 @@ function cleanupGroupMedia() {
         }
     }
     groupPeers.clear();
+}
+
+
+// ==========================================
+// 9. DISAPPEARING PHOTO & GIF SHARING
+// ==========================================
+if (groupShareMediaBtn) {
+    groupShareMediaBtn.addEventListener('click', () => {
+        if (shareMediaModal) shareMediaModal.classList.remove('hidden');
+    });
+}
+
+if (closeShareModalBtn) {
+    closeShareModalBtn.addEventListener('click', () => {
+        if (shareMediaModal) shareMediaModal.classList.add('hidden');
+    });
+}
+
+// File picker for device photos
+if (mediaFileInput) {
+    mediaFileInput.addEventListener('change', () => {
+        const file = mediaFileInput.files[0];
+        if (!file) return;
+
+        if (file.size > 8 * 1024 * 1024) {
+            alert('Picture is too large. Please select an image under 8MB.');
+            mediaFileInput.value = '';
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            selectedMediaDataUrl = e.target.result;
+            if (fileNamePreview) {
+                fileNamePreview.innerText = `Selected: ${file.name}`;
+                fileNamePreview.classList.remove('hidden');
+            }
+            if (mediaUrlInput) mediaUrlInput.value = '';
+        };
+        reader.readAsDataURL(file);
+    });
+}
+
+// Quick reaction GIF pills
+document.querySelectorAll('.gif-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const url = btn.getAttribute('data-url');
+        if (mediaUrlInput) mediaUrlInput.value = url;
+        selectedMediaDataUrl = null;
+        if (fileNamePreview) fileNamePreview.classList.add('hidden');
+        document.querySelectorAll('.gif-pill').forEach(p => p.classList.remove('selected'));
+        btn.classList.add('selected');
+    });
+});
+
+// Send media button
+if (btnSendMedia) {
+    btnSendMedia.addEventListener('click', () => {
+        const finalUrl = selectedMediaDataUrl || (mediaUrlInput && mediaUrlInput.value.trim());
+        if (!finalUrl) {
+            alert('Please select a picture or paste an image/GIF URL first.');
+            return;
+        }
+
+        btnSendMedia.disabled = true;
+        btnSendMedia.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+
+        socket.emit('group_share_media', { mediaUrl: finalUrl, duration: 10 }, (res) => {
+            btnSendMedia.disabled = false;
+            btnSendMedia.innerHTML = '<i class="fas fa-paper-plane"></i> Send (Disappears in 10s)';
+
+            // Reset modal state
+            if (shareMediaModal) shareMediaModal.classList.add('hidden');
+            selectedMediaDataUrl = null;
+            if (mediaFileInput) mediaFileInput.value = '';
+            if (mediaUrlInput) mediaUrlInput.value = '';
+            if (fileNamePreview) fileNamePreview.classList.add('hidden');
+            document.querySelectorAll('.gif-pill').forEach(p => p.classList.remove('selected'));
+        });
+    });
+}
+
+// Handle incoming disappearing photo / GIF in room
+socket.on('group_media_shared', ({ mediaUrl, senderName, duration }) => {
+    console.log(`[Media] Received media from ${senderName}, duration: ${duration}s`);
+    if (!disappearingMediaOverlay || !mediaPopupImg) return;
+
+    if (mediaCountdownTimer) {
+        clearInterval(mediaCountdownTimer);
+        mediaCountdownTimer = null;
+    }
+
+    if (mediaPopupSender) mediaPopupSender.innerText = senderName;
+    mediaPopupImg.src = mediaUrl;
+    disappearingMediaOverlay.classList.remove('hidden');
+
+    let remaining = duration || 10;
+    if (mediaCountdownSec) mediaCountdownSec.innerText = `${remaining}s`;
+    if (mediaProgressFill) mediaProgressFill.style.width = '100%';
+
+    const startTime = Date.now();
+    const totalMs = remaining * 1000;
+
+    mediaCountdownTimer = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const leftMs = Math.max(0, totalMs - elapsed);
+        const leftSec = Math.ceil(leftMs / 1000);
+
+        if (mediaCountdownSec) mediaCountdownSec.innerText = `${leftSec}s`;
+        if (mediaProgressFill) {
+            const pct = (leftMs / totalMs) * 100;
+            mediaProgressFill.style.width = `${pct}%`;
+        }
+
+        if (leftMs <= 0) {
+            clearInterval(mediaCountdownTimer);
+            mediaCountdownTimer = null;
+            closeMediaPopup();
+        }
+    }, 100);
+});
+
+if (closeMediaPopupBtn) {
+    closeMediaPopupBtn.addEventListener('click', closeMediaPopup);
+}
+
+function closeMediaPopup() {
+    if (mediaCountdownTimer) {
+        clearInterval(mediaCountdownTimer);
+        mediaCountdownTimer = null;
+    }
+    if (disappearingMediaOverlay) disappearingMediaOverlay.classList.add('hidden');
+    if (mediaPopupImg) mediaPopupImg.src = '';
 }
