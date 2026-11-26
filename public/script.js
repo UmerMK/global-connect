@@ -222,40 +222,71 @@ let audioContext = null;
 let audioAnalyser = null;
 let animationId = null;
 
-// Function to fetch TURN server credentials dynamically from Metered API (with global caching)
+// Function to fetch ICE/TURN server configuration cleanly from backend API (with short cache)
 let cachedTurnCredentials = null;
+let cachedTurnExpiresAt = 0;
 let turnCredentialsPromise = null;
+let lastIceConfigMeta = { turnConfigured: false, providers: ['public_stun'] };
+let privateIceMonitor = null;
 
 const CORE_PUBLIC_STUN_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' },
-    { urls: 'stun:stun2.l.google.com:19302' }
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' }
 ];
 
-async function getTurnCredentials() {
-    if (cachedTurnCredentials) return cachedTurnCredentials;
+function normalizeIceServersList(list) {
+    const seen = new Set();
+    const out = [];
+    for (const entry of (Array.isArray(list) ? list : [])) {
+        if (!entry || !entry.urls) continue;
+        const key = JSON.stringify(entry);
+        if (!seen.has(key)) {
+            seen.add(key);
+            out.push(entry);
+        }
+    }
+    return out;
+}
+
+async function getTurnCredentials(forceRefresh = false) {
+    const now = Date.now();
+    if (!forceRefresh && cachedTurnCredentials && now < cachedTurnExpiresAt) {
+        return cachedTurnCredentials;
+    }
     if (turnCredentialsPromise) return turnCredentialsPromise;
 
     turnCredentialsPromise = (async () => {
         try {
-            const response = await fetch("https://globalconnect.metered.live/api/v1/turn/credentials?apiKey=09587faf8d3d9a4627979ab8196eb8f0ee4c", {
+            const response = await fetch('/api/ice-servers', {
+                cache: 'no-store',
                 signal: AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined
             });
             if (!response.ok) {
-                console.warn('Failed to fetch TURN credentials, using fallback servers');
-                cachedTurnCredentials = getFallbackIceServers();
-                return cachedTurnCredentials;
+                throw new Error(`HTTP ${response.status}`);
             }
-            const dynamicServers = await response.json();
-            const turnOnly = Array.isArray(dynamicServers) ? dynamicServers : [];
-            // ALWAYS include reliable Google + Cloudflare STUN (UDP/IPv4/IPv6) alongside dynamic TURN
-            cachedTurnCredentials = [...CORE_PUBLIC_STUN_SERVERS, ...turnOnly];
-            console.log('%c✅ ICE servers (Google/Cloudflare STUN + Dynamic TURN) ready', 'color: green; font-weight: bold');
+            const data = await response.json();
+            const serverList = normalizeIceServersList([
+                ...CORE_PUBLIC_STUN_SERVERS,
+                ...(Array.isArray(data && data.iceServers) ? data.iceServers : [])
+            ]);
+            lastIceConfigMeta = {
+                turnConfigured: !!(data && data.turnConfigured),
+                providers: Array.isArray(data && data.providers) ? data.providers : ['public_stun']
+            };
+            cachedTurnCredentials = serverList;
+            cachedTurnExpiresAt = Date.now() + 2 * 60 * 1000;
+            console.log(
+                `%c[ICE] Servers ready (${serverList.length} entries, TURN relay configured: ${lastIceConfigMeta.turnConfigured})`,
+                lastIceConfigMeta.turnConfigured ? 'color: green; font-weight: bold' : 'color: orange; font-weight: bold'
+            );
             return cachedTurnCredentials;
         } catch (error) {
-            console.warn('TURN API fetch unavailable, using core STUN + fallback servers:', error && error.message);
-            cachedTurnCredentials = getFallbackIceServers();
+            console.warn('[ICE] /api/ice-servers unavailable, using core public STUN:', error && error.message);
+            lastIceConfigMeta = { turnConfigured: false, providers: ['public_stun_fallback'] };
+            cachedTurnCredentials = [...CORE_PUBLIC_STUN_SERVERS];
+            cachedTurnExpiresAt = Date.now() + 30 * 1000;
             return cachedTurnCredentials;
         } finally {
             turnCredentialsPromise = null;
@@ -264,42 +295,49 @@ async function getTurnCredentials() {
     return turnCredentialsPromise;
 }
 
-// Fallback ICE servers in case the Metered API is unavailable
-function getFallbackIceServers() {
-    return [
-        ...CORE_PUBLIC_STUN_SERVERS,
-        { urls: 'stun:stun.services.mozilla.com' },
-        {
-            urls: [
-                'turn:global.relay.metered.ca:80',
-                'turn:global.relay.metered.ca:80?transport=tcp',
-                'turn:global.relay.metered.ca:443',
-                'turns:global.relay.metered.ca:443?transport=tcp'
-            ],
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        },
-        {
-            urls: 'turn:freestun.net:3478',
-            username: 'free',
-            credential: 'free'
-        }
-    ];
+function showTapSoundPill() {
+    if (document.getElementById('tap-sound-pill')) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'tap-sound-pill';
+    btn.className = 'tap-sound-pill';
+    btn.innerHTML = '<i class="fas fa-volume-up"></i> Tap for Sound';
+    btn.addEventListener('click', () => {
+        unlockMobileMedia();
+        hideTapSoundPill();
+    });
+    document.body.appendChild(btn);
 }
 
-function safePlayMedia(mediaEl, label) {
+function hideTapSoundPill() {
+    const btn = document.getElementById('tap-sound-pill');
+    if (btn) btn.remove();
+}
+
+function safePlayMedia(mediaEl, label, promptSoundOnBlock = false) {
     if (!mediaEl || !mediaEl.srcObject) return;
-    if (!mediaEl.paused) return;
+    if (!mediaEl.paused || mediaEl._playPending) return;
     try {
         const playPromise = mediaEl.play();
-        if (playPromise && typeof playPromise.catch === 'function') {
-            playPromise.catch((err) => {
-                if (err && err.name !== 'AbortError') {
-                    console.warn(label || 'Media playback deferred:', err.name || err.message);
+        if (playPromise && typeof playPromise.then === 'function') {
+            mediaEl._playPending = true;
+            playPromise.then(() => {
+                mediaEl._playPending = false;
+                if (mediaEl.tagName === 'AUDIO') {
+                    hideTapSoundPill();
+                }
+            }).catch((err) => {
+                mediaEl._playPending = false;
+                if (!err || err.name === 'AbortError') return;
+                console.warn(label || 'Media playback deferred:', err.name || err.message);
+                if (promptSoundOnBlock && err.name === 'NotAllowedError') {
+                    showTapSoundPill();
                 }
             });
         }
-    } catch (e) {}
+    } catch (e) {
+        mediaEl._playPending = false;
+    }
 }
 
 function unlockMobileMedia() {
@@ -323,6 +361,114 @@ function unlockMobileMedia() {
 }
 
 document.addEventListener('pointerdown', unlockMobileMedia, { passive: true });
+
+// Shared WebRTC ICE diagnostics & auto-restart monitor (used by both 1-on-1 & Group/Public)
+function createIceDiagnosticsMonitor({ pc, isInitiator, onStateChange, onRequestRestart, onBlocked }) {
+    let localHasRelay = false;
+    let remoteHasRelay = false;
+    let hadTurnError = false;
+    let restartCount = 0;
+    let checkingTimer = null;
+    let blockedTimer = null;
+    let disconnectedTimer = null;
+    let cleanedUp = false;
+
+    const clearTimers = () => {
+        if (checkingTimer) { clearTimeout(checkingTimer); checkingTimer = null; }
+        if (blockedTimer) { clearTimeout(blockedTimer); blockedTimer = null; }
+        if (disconnectedTimer) { clearTimeout(disconnectedTimer); disconnectedTimer = null; }
+    };
+
+    const triggerRestart = (reason) => {
+        if (cleanedUp || restartCount >= 2) return false;
+        restartCount++;
+        console.warn(`[ICE] Triggering restart #${restartCount} (${reason})`);
+        if (typeof onRequestRestart === 'function') {
+            onRequestRestart(reason, restartCount);
+        }
+        return true;
+    };
+
+    const getBlockedReason = () => {
+        if (!localHasRelay && !remoteHasRelay) {
+            return (!lastIceConfigMeta.turnConfigured || hadTurnError) ? 'no-turn' : 'nat-blocked';
+        }
+        return 'nat-blocked';
+    };
+
+    const armStuckTimers = () => {
+        clearTimers();
+        checkingTimer = setTimeout(() => {
+            if (!cleanedUp && pc && (pc.iceConnectionState === 'checking' || pc.iceConnectionState === 'new') && restartCount === 0) {
+                triggerRestart('checking-timeout');
+            }
+        }, 7000);
+        blockedTimer = setTimeout(() => {
+            if (!cleanedUp && pc && ['new', 'checking', 'failed', 'disconnected'].includes(pc.iceConnectionState)) {
+                if (typeof onBlocked === 'function') {
+                    onBlocked(getBlockedReason(), { localHasRelay, remoteHasRelay, hadTurnError });
+                }
+            }
+        }, 13000);
+    };
+
+    return {
+        startWatch() {
+            if (cleanedUp || !pc) return;
+            if (['connected', 'completed'].includes(pc.iceConnectionState)) return;
+            if (!checkingTimer && !blockedTimer) {
+                armStuckTimers();
+            }
+        },
+        noteLocalCandidate(candidate) {
+            if (candidate && candidate.candidate && candidate.candidate.includes('typ relay')) {
+                localHasRelay = true;
+            }
+        },
+        noteRemoteCandidate(candidate) {
+            if (candidate && candidate.candidate && candidate.candidate.includes('typ relay')) {
+                remoteHasRelay = true;
+            }
+        },
+        noteCandidateError(event) {
+            if (event && [400, 401, 403, 486].includes(Number(event.errorCode))) {
+                hadTurnError = true;
+            }
+        },
+        handleConnectionStateChange() {
+            if (cleanedUp || !pc) return;
+            const state = pc.iceConnectionState;
+            clearTimers();
+
+            if (typeof onStateChange === 'function') {
+                onStateChange(state);
+            }
+
+            if (state === 'checking') {
+                armStuckTimers();
+            } else if (state === 'disconnected') {
+                disconnectedTimer = setTimeout(() => {
+                    if (!cleanedUp && pc && pc.iceConnectionState === 'disconnected') {
+                        triggerRestart('disconnected-timeout');
+                    }
+                }, 4000);
+            } else if (state === 'failed') {
+                if (!triggerRestart('ice-failed') && typeof onBlocked === 'function') {
+                    onBlocked(getBlockedReason(), { localHasRelay, remoteHasRelay, hadTurnError });
+                }
+            } else if (state === 'connected' || state === 'completed') {
+                restartCount = 0;
+            }
+        },
+        getSummary() {
+            return { localHasRelay, remoteHasRelay, hadTurnError, isInitiator };
+        },
+        cleanup() {
+            cleanedUp = true;
+            clearTimers();
+        }
+    };
+}
 
 // Helpers
 function showScreen(screenId) {
@@ -629,9 +775,7 @@ function updatePrivateVideoStage() {
                     remoteVideo.srcObject = privateRemoteVideoStream;
                 }
                 remoteVideo.classList.remove('hidden');
-                if (remoteVideo.paused) {
-                    remoteVideo.play().catch(e => console.warn('Remote video play blocked:', e));
-                }
+                safePlayMedia(remoteVideo, 'Remote video play');
             }
             if (remotePlaceholder) remotePlaceholder.classList.add('hidden');
         } else {
@@ -802,6 +946,11 @@ function endSession() {
     console.log('Ending session and cleaning up resources...');
     stopTimer();
     stopVisualizers(); // Renamed from stopVisualizer
+    hideTapSoundPill();
+    if (privateIceMonitor) {
+        privateIceMonitor.cleanup();
+        privateIceMonitor = null;
+    }
     signalQueue = [];
     isInitializing = false;
     needsPrivateRenegotiation = false;
@@ -1117,30 +1266,63 @@ async function initWebRTC(isCaller) {
             await syncPrivateTracksToPeer(peerConnection);
         }
 
+        let privateRelayNotified = false;
+        let privateBlockedNotified = false;
+        if (privateIceMonitor) privateIceMonitor.cleanup();
+        privateIceMonitor = createIceDiagnosticsMonitor({
+            pc: peerConnection,
+            isInitiator: isPrivateInitiator,
+            onStateChange: (state) => {
+                if (!peerConnection) return;
+                console.log('ICE Connection State Change:', state);
+                if (state === 'checking') {
+                    callStatus.innerText = 'Connecting audio & video...';
+                } else if (state === 'connected' || state === 'completed') {
+                    callStatus.innerText = localStream ? 'Connected - Speaking' : 'Connected - Listening';
+                    if (isPartnerCameraOn && privateRemoteVideoStream) {
+                        updatePrivateVideoStage();
+                    }
+                } else if (state === 'failed' || state === 'disconnected') {
+                    callStatus.innerText = 'Reconnecting...';
+                } else {
+                    callStatus.innerText = 'Status: ' + state;
+                }
+            },
+            onRequestRestart: async () => {
+                if (!peerConnection) return;
+                if (isPrivateInitiator) {
+                    if (peerConnection.signalingState === 'stable') {
+                        try {
+                            if (typeof peerConnection.restartIce === 'function') {
+                                peerConnection.restartIce();
+                            }
+                            const offer = await peerConnection.createOffer({ iceRestart: true });
+                            await peerConnection.setLocalDescription(offer);
+                            socket.emit('signal', { offer });
+                        } catch (e) {
+                            console.warn('[1-on-1] ICE restart offer failed:', e);
+                        }
+                    }
+                } else {
+                    socket.emit('signal', { requestIceRestart: true });
+                }
+            },
+            onBlocked: (reason) => {
+                if (!peerConnection || privateBlockedNotified) return;
+                privateBlockedNotified = true;
+                if (reason === 'no-turn') {
+                    callStatus.innerText = 'NAT Blocked — Needs TURN Relay';
+                    addMessage('Direct P2P audio/video was blocked between these networks because no active TURN relay server is configured on the server.', 'system');
+                } else {
+                    callStatus.innerText = 'Connection Blocked — Retrying';
+                    addMessage('Network firewall blocked direct audio/video between devices.', 'system');
+                }
+            }
+        });
+
         // Monitor connection state - Detailed UI updates + resilient ICE restart
         peerConnection.oniceconnectionstatechange = () => {
-            if (!peerConnection) return;
-            const state = peerConnection.iceConnectionState;
-            console.log('ICE Connection State Change:', state);
-
-            if (state === 'checking') {
-                callStatus.innerText = 'Connecting audio & video...';
-            } else if (state === 'connected' || state === 'completed') {
-                callStatus.innerText = localStream ? 'Connected - Speaking' : 'Connected - Listening';
-                if (isPartnerCameraOn && privateRemoteVideoStream) {
-                    updatePrivateVideoStage();
-                }
-            } else if (state === 'failed') {
-                callStatus.innerText = 'Reconnecting...';
-                if (isPrivateInitiator && typeof peerConnection.restartIce === 'function') {
-                    peerConnection.restartIce();
-                    renegotiatePrivatePeer();
-                }
-            } else if (state === 'disconnected') {
-                callStatus.innerText = 'Reconnecting...';
-            } else {
-                callStatus.innerText = 'Status: ' + state;
-            }
+            if (privateIceMonitor) privateIceMonitor.handleConnectionStateChange();
         };
 
         peerConnection.onicegatheringstatechange = () => {
@@ -1154,14 +1336,7 @@ async function initWebRTC(isCaller) {
                 if (remoteAudio.srcObject !== audioStream) {
                     remoteAudio.srcObject = audioStream;
                 }
-                remoteAudio.play().then(() => {
-                    console.log("Remote audio playing successfully");
-                }).catch(e => {
-                    if (e && e.name !== 'AbortError') {
-                        console.warn("Audio autoplay blocked:", e);
-                        addMessage("Tap anywhere on screen to unmute partner voice.", "system");
-                    }
-                });
+                safePlayMedia(remoteAudio, 'Remote audio play', true);
 
                 callStatus.innerText = localStream ? 'Connected - Speaking' : 'Connected - Listening';
                 startTimer();
@@ -1212,31 +1387,24 @@ async function initWebRTC(isCaller) {
         };
 
         peerConnection.onicecandidateerror = (event) => {
+            if (privateIceMonitor) privateIceMonitor.noteCandidateError(event);
             console.warn("ICE Candidate Error:", event.errorCode, event.errorText);
         };
 
         peerConnection.onicecandidate = (event) => {
             if (event.candidate) {
+                if (privateIceMonitor) privateIceMonitor.noteLocalCandidate(event.candidate);
                 const candidateStr = event.candidate.candidate;
-                const candidateType = event.candidate.type;
-                console.log(`%c[ICE] Local Candidate Generated`, "color: cyan; font-weight: bold");
-                console.log(`  Type: ${candidateType}`);
-                console.log(`  Full: ${candidateStr}`);
+                console.log(`[ICE] Candidate (${event.candidate.type}):`, candidateStr);
 
-                // Check if this is a RELAY candidate (CRITICAL for different networks)
-                if (candidateStr.includes('typ relay')) {
-                    console.log("%c✅ RELAY CANDIDATE FOUND! This can bridge different networks.", "color: green; font-weight: bold; font-size: 14px");
-                    addMessage('🌐 Cross-network connection ready!', 'system');
-                } else if (candidateStr.includes('typ srflx')) {
-                    console.log("%c⚠️  SRFLX (Server Reflexive) candidate - may work for some networks", "color: orange");
-                } else if (candidateStr.includes('typ host')) {
-                    console.log("%c📡 HOST candidate - works for same network only", "color: gray");
+                if (candidateStr.includes('typ relay') && !privateRelayNotified) {
+                    privateRelayNotified = true;
+                    addMessage('🌐 Cross-network relay ready!', 'system');
                 }
 
                 socket.emit('signal', { candidate: event.candidate });
             } else {
-                console.log("%c🏁 ICE Gathering Complete", "color: blue; font-weight: bold");
-                console.log("%c[Summary] Check above for relay candidates. If none found, cross-network connections may fail.", "color: yellow");
+                console.log("🏁 ICE Gathering Complete", privateIceMonitor ? privateIceMonitor.getSummary() : {});
             }
         };
 
@@ -1252,6 +1420,7 @@ async function initWebRTC(isCaller) {
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
             socket.emit('signal', { offer });
+            if (privateIceMonitor) privateIceMonitor.startWatch();
         }
         playSystemSound('connect');
     } catch (err) {
@@ -1309,6 +1478,7 @@ async function handleSignal(data) {
         await peerConnection.setLocalDescription(answer);
         console.log('Sending answer...');
         socket.emit('signal', { answer });
+        if (privateIceMonitor) privateIceMonitor.startWatch();
         if (needsPrivateRenegotiation && peerConnection.signalingState === 'stable') {
             await renegotiatePrivatePeer();
         }
@@ -1317,12 +1487,23 @@ async function handleSignal(data) {
         await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
         while (signalQueue.length > 0 && signalQueue[0].candidate) {
             const c = signalQueue.shift();
+            if (privateIceMonitor) privateIceMonitor.noteRemoteCandidate(c.candidate);
             try { await peerConnection.addIceCandidate(new RTCIceCandidate(c.candidate)); } catch (e) {}
         }
         if (needsPrivateRenegotiation && peerConnection.signalingState === 'stable') {
             await renegotiatePrivatePeer();
         }
+    } else if (data.requestIceRestart && isPrivateInitiator && peerConnection && peerConnection.signalingState === 'stable') {
+        try {
+            if (typeof peerConnection.restartIce === 'function') peerConnection.restartIce();
+            const offer = await peerConnection.createOffer({ iceRestart: true });
+            await peerConnection.setLocalDescription(offer);
+            socket.emit('signal', { offer });
+        } catch (e) {
+            console.warn('[1-on-1] Remote requested ICE restart failed:', e);
+        }
     } else if (data.candidate) {
+        if (privateIceMonitor) privateIceMonitor.noteRemoteCandidate(data.candidate);
         console.log("ICE [Remote Candidate Received]:", data.candidate.candidate);
         if (peerConnection && peerConnection.remoteDescription) {
             try {
@@ -2094,8 +2275,67 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
         videoStream: null,
         isCameraOn: typeof knownMedia.isCameraOn === 'boolean' ? knownMedia.isCameraOn : !!initialCameraOn,
         isAudioMuted: typeof knownMedia.isAudioMuted === 'boolean' ? knownMedia.isAudioMuted : false,
-        needsRenegotiation: false
+        needsRenegotiation: false,
+        iceMonitor: null
     };
+
+    const setPeerIcePill = (text, isWarning = false) => {
+        const card = document.getElementById(`card-${targetMemberId}`);
+        if (!card) return;
+        const wrapper = card.querySelector('.media-wrapper');
+        if (!wrapper) return;
+        let pill = document.getElementById(`ice-pill-${targetMemberId}`);
+        if (!text) {
+            if (pill) pill.remove();
+            return;
+        }
+        if (!pill) {
+            pill = document.createElement('span');
+            pill.id = `ice-pill-${targetMemberId}`;
+            wrapper.appendChild(pill);
+        }
+        pill.className = isWarning ? 'peer-ice-pill is-warning' : 'peer-ice-pill';
+        pill.innerText = text;
+    };
+
+    peerData.iceMonitor = createIceDiagnosticsMonitor({
+        pc: pc,
+        isInitiator: isInitiator,
+        onStateChange: (state) => {
+            console.log(`[Group] ICE State with ${targetMemberId}: ${state}`);
+            if (state === 'connected' || state === 'completed') {
+                setPeerIcePill(null);
+                if (peerData.isCameraOn) {
+                    applyGroupMediaStateToUi(targetMemberId, { isCameraOn: true });
+                }
+            } else if (state === 'checking') {
+                setPeerIcePill('Connecting...');
+            } else if (state === 'failed' || state === 'disconnected') {
+                setPeerIcePill('Reconnecting...');
+            }
+        },
+        onRequestRestart: async () => {
+            if (!groupPeers.has(targetMemberId) || !peerData.pc) return;
+            if (isInitiator) {
+                if (pc.signalingState === 'stable') {
+                    try {
+                        if (typeof pc.restartIce === 'function') pc.restartIce();
+                        const offer = await pc.createOffer({ iceRestart: true });
+                        await pc.setLocalDescription(offer);
+                        socket.emit('group_signal', { to: targetMemberId, data: { offer } });
+                    } catch (e) {
+                        console.warn(`[Group] ICE restart failed for ${targetMemberId}:`, e);
+                    }
+                }
+            } else {
+                socket.emit('group_signal', { to: targetMemberId, data: { requestIceRestart: true } });
+            }
+        },
+        onBlocked: (reason) => {
+            if (!groupPeers.has(targetMemberId)) return;
+            setPeerIcePill(reason === 'no-turn' ? 'NAT Blocked (Needs TURN)' : 'Network Blocked', true);
+        }
+    });
 
     groupPeers.set(targetMemberId, peerData);
 
@@ -2108,11 +2348,16 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
     // ICE Candidate generation
     pc.onicecandidate = (event) => {
         if (event.candidate) {
+            if (peerData.iceMonitor) peerData.iceMonitor.noteLocalCandidate(event.candidate);
             socket.emit('group_signal', {
                 to: targetMemberId,
                 data: { candidate: event.candidate }
             });
         }
+    };
+
+    pc.onicecandidateerror = (event) => {
+        if (peerData.iceMonitor) peerData.iceMonitor.noteCandidateError(event);
     };
 
     // Remote Track received (Audio or Video)
@@ -2125,7 +2370,7 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
             if (remoteAudioEl.srcObject !== streamToPlay) {
                 remoteAudioEl.srcObject = streamToPlay;
             }
-            safePlayMedia(remoteAudioEl, 'Remote audio play');
+            safePlayMedia(remoteAudioEl, 'Remote audio play', true);
         } else if (event.track.kind === 'video') {
             const cardVideoEl = document.getElementById(`video-${targetMemberId}`);
             const avatarBox = document.getElementById(`avatar-box-${targetMemberId}`);
@@ -2162,6 +2407,7 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
 
             event.track.onunmute = () => {
                 console.log(`[Group] Video track unmuted for ${targetMemberId}`);
+                setPeerIcePill(null);
                 if (currentPeer) currentPeer.isCameraOn = true;
                 if (cardVideoEl) {
                     cardVideoEl.muted = true;
@@ -2204,15 +2450,7 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
     };
 
     pc.oniceconnectionstatechange = () => {
-        console.log(`[Group] ICE State with ${targetMemberId}: ${pc.iceConnectionState}`);
-        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-            if (peerData.isCameraOn) {
-                applyGroupMediaStateToUi(targetMemberId, { isCameraOn: true });
-            }
-        } else if (pc.iceConnectionState === 'failed' && isInitiator && typeof pc.restartIce === 'function') {
-            pc.restartIce();
-            renegotiateGroupPeer(targetMemberId, peerData);
-        }
+        if (peerData.iceMonitor) peerData.iceMonitor.handleConnectionStateChange();
     };
 
     // If initiator, create and send offer
@@ -2224,6 +2462,7 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
                 to: targetMemberId,
                 data: { offer: offer }
             });
+            if (peerData.iceMonitor) peerData.iceMonitor.startWatch();
         } catch (err) {
             console.error(`[Group] Failed to create offer for ${targetMemberId}:`, err);
         }
@@ -2293,6 +2532,7 @@ socket.on('group_signal', async ({ from, data }) => {
                 to: from,
                 data: { answer: answer }
             });
+            if (peer.iceMonitor) peer.iceMonitor.startWatch();
             console.log(`[Group] Sent answer to ${from}`);
 
             if (peer.needsRenegotiation) {
@@ -2316,7 +2556,13 @@ socket.on('group_signal', async ({ from, data }) => {
             if (peer.needsRenegotiation) {
                 renegotiateGroupPeer(from, peer);
             }
+        } else if (data.requestIceRestart && pc.signalingState === 'stable') {
+            if (typeof pc.restartIce === 'function') pc.restartIce();
+            const offer = await pc.createOffer({ iceRestart: true });
+            await pc.setLocalDescription(offer);
+            socket.emit('group_signal', { to: from, data: { offer } });
         } else if (data.candidate) {
+            if (peer.iceMonitor) peer.iceMonitor.noteRemoteCandidate(data.candidate);
             if (pc.remoteDescription && pc.remoteDescription.type) {
                 await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
             } else {
@@ -2816,6 +3062,10 @@ function createRemoteParticipantCard(memberId, displayName, isOwner, avatarUrl) 
 function removeRemoteParticipant(memberId) {
     const peer = groupPeers.get(memberId);
     if (peer) {
+        if (peer.iceMonitor) {
+            peer.iceMonitor.cleanup();
+            peer.iceMonitor = null;
+        }
         if (peer.pc) {
             peer.pc.onicecandidate = null;
             peer.pc.ontrack = null;
@@ -2882,6 +3132,7 @@ if (groupLeaveControlBtn) groupLeaveControlBtn.addEventListener('click', leaveGr
 function leaveGroupRoom() {
     console.log('[Group] Leaving room...');
     const wasPublic = isPublicRoomMode;
+    hideTapSoundPill();
     cleanupGroupMedia();
     socket.emit('group_leave');
 
@@ -2975,6 +3226,10 @@ function cleanupGroupMedia() {
 
     // Close all peer connections
     for (const [peerId, peer] of groupPeers.entries()) {
+        if (peer.iceMonitor) {
+            peer.iceMonitor.cleanup();
+            peer.iceMonitor = null;
+        }
         if (peer.pc) {
             peer.pc.onicecandidate = null;
             peer.pc.ontrack = null;

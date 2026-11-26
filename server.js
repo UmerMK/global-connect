@@ -299,6 +299,156 @@ function handleLeaveGroup(socket) {
     }
 }
 
+// ==========================================
+// ICE / STUN / TURN CONFIGURATION API
+// ==========================================
+const DEFAULT_PUBLIC_STUN_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' }
+];
+
+let cachedIceResult = null;
+let cachedIceExpiresAt = 0;
+
+function httpsJsonRequest(urlString, { method = 'GET', headers = {}, body = null, timeoutMs = 4500 } = {}) {
+    return new Promise((resolve, reject) => {
+        const https = require('https');
+        const req = https.request(urlString, { method, headers, timeout: timeoutMs }, (res) => {
+            let raw = '';
+            res.on('data', chunk => { raw += chunk; });
+            res.on('end', () => {
+                let parsed = null;
+                try { parsed = JSON.parse(raw); } catch (e) {}
+                resolve({ status: res.statusCode, parsed, raw });
+            });
+        });
+        req.on('timeout', () => req.destroy(new Error('Request timeout')));
+        req.on('error', reject);
+        if (body) req.write(body);
+        req.end();
+    });
+}
+
+async function resolveServerIceConfig() {
+    const now = Date.now();
+    if (cachedIceResult && now < cachedIceExpiresAt) {
+        return cachedIceResult;
+    }
+
+    // 1. Explicit full JSON override (ICE_SERVERS_JSON)
+    if (process.env.ICE_SERVERS_JSON) {
+        try {
+            const parsed = JSON.parse(process.env.ICE_SERVERS_JSON);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                const hasTurn = parsed.some(s => String(Array.isArray(s.urls) ? s.urls.join(',') : s.urls || '').includes('turn'));
+                cachedIceResult = { iceServers: parsed, turnConfigured: hasTurn, providers: ['custom_json'] };
+                cachedIceExpiresAt = now + 5 * 60 * 1000;
+                return cachedIceResult;
+            }
+        } catch (err) {
+            console.warn('[ICE] Invalid ICE_SERVERS_JSON:', err.message);
+        }
+    }
+
+    const iceServers = [...DEFAULT_PUBLIC_STUN_SERVERS];
+    const providers = ['public_stun'];
+    let turnConfigured = false;
+    let cacheTtlMs = 2 * 60 * 1000;
+
+    // 2. Cloudflare Realtime TURN (1 TB/month free tier; TLS 443 ready)
+    const cfKeyId = (process.env.CLOUDFLARE_TURN_KEY_ID || process.env.CF_TURN_KEY_ID || '').trim();
+    const cfToken = (process.env.CLOUDFLARE_TURN_API_TOKEN || process.env.CF_TURN_API_TOKEN || '').trim();
+    if (cfKeyId && cfToken) {
+        try {
+            const ttlSec = Math.min(172800, Math.max(300, Number(process.env.CLOUDFLARE_TURN_TTL) || 86400));
+            const cfUrl = `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(cfKeyId)}/credentials/generate-ice-servers`;
+            const res = await httpsJsonRequest(cfUrl, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${cfToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ ttl: ttlSec })
+            });
+            const cfList = res.parsed && (Array.isArray(res.parsed.iceServers) ? res.parsed.iceServers : (Array.isArray(res.parsed) ? res.parsed : null));
+            if (res.status >= 200 && res.status < 300 && cfList && cfList.length > 0) {
+                for (const entry of cfList) {
+                    iceServers.push(entry);
+                }
+                turnConfigured = true;
+                providers.push('cloudflare_turn');
+                cacheTtlMs = Math.min(cacheTtlMs, Math.floor((ttlSec * 1000) / 3));
+            } else {
+                console.warn('[ICE] Cloudflare TURN API returned status:', res.status);
+            }
+        } catch (err) {
+            console.warn('[ICE] Cloudflare TURN fetch failed:', err.message);
+        }
+    }
+
+    // 3. Dynamic Metered TURN credentials via environment variables
+    const meteredApp = (process.env.METERED_APP_NAME || '').trim();
+    const meteredKey = (process.env.METERED_API_KEY || '').trim();
+    if (meteredApp && meteredKey) {
+        try {
+            const region = (process.env.METERED_REGION || '').trim();
+            const q = region ? `&region=${encodeURIComponent(region)}` : '';
+            const mUrl = `https://${encodeURIComponent(meteredApp)}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(meteredKey)}${q}`;
+            const res = await httpsJsonRequest(mUrl);
+            if (res.status >= 200 && res.status < 300 && Array.isArray(res.parsed) && res.parsed.length > 0) {
+                for (const entry of res.parsed) {
+                    const u = String(Array.isArray(entry.urls) ? entry.urls.join(',') : entry.urls || '');
+                    if (u.includes('turn:') || u.includes('turns:')) {
+                        iceServers.push(entry);
+                        turnConfigured = true;
+                    }
+                }
+                if (turnConfigured) {
+                    providers.push('metered_turn');
+                    cacheTtlMs = 5 * 60 * 1000;
+                }
+            } else {
+                console.warn('[ICE] Metered TURN API returned status:', res.status);
+            }
+        } catch (err) {
+            console.warn('[ICE] Metered TURN fetch failed:', err.message);
+        }
+    }
+
+    // 4. Static / Self-hosted Coturn / ExpressTURN via environment variables
+    const staticTurnUrls = (process.env.TURN_URLS || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (staticTurnUrls.length > 0 && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+        iceServers.push({
+            urls: staticTurnUrls.length === 1 ? staticTurnUrls[0] : staticTurnUrls,
+            username: process.env.TURN_USERNAME,
+            credential: process.env.TURN_CREDENTIAL
+        });
+        turnConfigured = true;
+        providers.push('static_turn');
+    }
+
+    cachedIceResult = { iceServers, turnConfigured, providers };
+    cachedIceExpiresAt = now + cacheTtlMs;
+    return cachedIceResult;
+}
+
+app.get('/api/ice-servers', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    try {
+        const config = await resolveServerIceConfig();
+        res.json(config);
+    } catch (err) {
+        console.warn('[ICE] /api/ice-servers error:', err.message);
+        res.json({
+            iceServers: DEFAULT_PUBLIC_STUN_SERVERS,
+            turnConfigured: false,
+            providers: ['public_stun_fallback']
+        });
+    }
+});
+
 io.on('connection', (socket) => {
     onlineCount++;
     console.log(`User ${socket.id} connected. Total online: ${onlineCount}`);
