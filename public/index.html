@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=7.0">
+    <link rel="stylesheet" href="style.css?v=7.1">
     <style>
         .visualizer-pair {
             display: flex;
@@ -256,7 +256,7 @@
                     <div id="private-video-stage" class="private-video-stage hidden">
                         <!-- Partner / Remote Hero Stage -->
                         <div class="split-video-pane remote-pane" id="private-remote-pane">
-                            <video id="private-remote-video" class="split-video-feed hidden" autoplay playsinline webkit-playsinline></video>
+                            <video id="private-remote-video" class="split-video-feed hidden" autoplay playsinline webkit-playsinline muted></video>
                             <div id="private-remote-placeholder" class="video-placeholder-view">
                                 <div class="placeholder-avatar-ring">
                                     <img id="split-partner-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=Stranger" alt="Partner">
@@ -643,7 +643,7 @@
 
     <!-- Load Socket.IO client library -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="script.js?v=7.0"></script>
+    <script src="script.js?v=7.1"></script>
 </body>
 
 </html>

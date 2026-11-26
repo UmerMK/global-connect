@@ -53,6 +53,57 @@ let isPrivateChatHidden = false;
 let privateUnreadCount = 0;
 let privateToastTimer = null;
 let needsPrivateRenegotiation = false;
+let isPrivateInitiator = false;
+
+async function syncPrivateTracksToPeer(pc) {
+    if (!pc) return;
+    const localAudioTrack = (localStream && localStream.getAudioTracks()[0]) || null;
+    const localVideoTrack = (privateLocalVideoStream && isPrivateCameraOn && privateLocalVideoStream.getVideoTracks()[0]) || null;
+
+    let audioTransceiver = getTransceiverByKind(pc, 'audio');
+    try {
+        if (localAudioTrack) {
+            if (audioTransceiver) {
+                audioTransceiver.direction = 'sendrecv';
+                await audioTransceiver.sender.replaceTrack(localAudioTrack);
+                if (typeof audioTransceiver.sender.setStreams === 'function' && localStream) {
+                    audioTransceiver.sender.setStreams(localStream);
+                }
+            } else {
+                pc.addTransceiver(localAudioTrack, { direction: 'sendrecv', streams: [localStream] });
+            }
+        } else if (audioTransceiver) {
+            audioTransceiver.direction = 'recvonly';
+            await audioTransceiver.sender.replaceTrack(null);
+        } else {
+            pc.addTransceiver('audio', { direction: 'recvonly' });
+        }
+    } catch (e) {
+        console.warn('[1-on-1] sync audio note:', e);
+    }
+
+    let videoTransceiver = getTransceiverByKind(pc, 'video');
+    try {
+        if (localVideoTrack) {
+            if (videoTransceiver) {
+                videoTransceiver.direction = 'sendrecv';
+                await videoTransceiver.sender.replaceTrack(localVideoTrack);
+                if (typeof videoTransceiver.sender.setStreams === 'function' && privateLocalVideoStream) {
+                    videoTransceiver.sender.setStreams(privateLocalVideoStream);
+                }
+            } else {
+                pc.addTransceiver(localVideoTrack, { direction: 'sendrecv', streams: [privateLocalVideoStream] });
+            }
+        } else if (videoTransceiver) {
+            videoTransceiver.direction = 'recvonly';
+            await videoTransceiver.sender.replaceTrack(null);
+        } else {
+            pc.addTransceiver('video', { direction: 'recvonly' });
+        }
+    } catch (e) {
+        console.warn('[1-on-1] sync video note:', e);
+    }
+}
 
 async function renegotiatePrivatePeer() {
     if (!peerConnection) return;
@@ -175,25 +226,35 @@ let animationId = null;
 let cachedTurnCredentials = null;
 let turnCredentialsPromise = null;
 
+const CORE_PUBLIC_STUN_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun2.l.google.com:19302' }
+];
+
 async function getTurnCredentials() {
     if (cachedTurnCredentials) return cachedTurnCredentials;
     if (turnCredentialsPromise) return turnCredentialsPromise;
 
     turnCredentialsPromise = (async () => {
         try {
-            const response = await fetch("https://globalconnect.metered.live/api/v1/turn/credentials?apiKey=09587faf8d3d9a4627979ab8196eb8f0ee4c");
+            const response = await fetch("https://globalconnect.metered.live/api/v1/turn/credentials?apiKey=09587faf8d3d9a4627979ab8196eb8f0ee4c", {
+                signal: AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined
+            });
             if (!response.ok) {
                 console.warn('Failed to fetch TURN credentials, using fallback servers');
                 cachedTurnCredentials = getFallbackIceServers();
                 return cachedTurnCredentials;
             }
-            const iceServers = await response.json();
-            console.log('%c✅ Dynamic TURN credentials loaded successfully', 'color: green; font-weight: bold');
-            cachedTurnCredentials = iceServers;
-            return iceServers;
+            const dynamicServers = await response.json();
+            const turnOnly = Array.isArray(dynamicServers) ? dynamicServers : [];
+            // ALWAYS include reliable Google + Cloudflare STUN (UDP/IPv4/IPv6) alongside dynamic TURN
+            cachedTurnCredentials = [...CORE_PUBLIC_STUN_SERVERS, ...turnOnly];
+            console.log('%c✅ ICE servers (Google/Cloudflare STUN + Dynamic TURN) ready', 'color: green; font-weight: bold');
+            return cachedTurnCredentials;
         } catch (error) {
-            console.error('Error fetching TURN credentials:', error);
-            console.warn('Using fallback TURN servers');
+            console.warn('TURN API fetch unavailable, using core STUN + fallback servers:', error && error.message);
             cachedTurnCredentials = getFallbackIceServers();
             return cachedTurnCredentials;
         } finally {
@@ -206,13 +267,8 @@ async function getTurnCredentials() {
 // Fallback ICE servers in case the Metered API is unavailable
 function getFallbackIceServers() {
     return [
-        // STUN servers for NAT traversal (multiple for redundancy)
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
+        ...CORE_PUBLIC_STUN_SERVERS,
         { urls: 'stun:stun.services.mozilla.com' },
-
-        // Fallback TURN: Metered Open Relay
         {
             urls: [
                 'turn:global.relay.metered.ca:80',
@@ -223,8 +279,6 @@ function getFallbackIceServers() {
             username: 'openrelayproject',
             credential: 'openrelayproject'
         },
-
-        // Backup TURN: FreeStun.net
         {
             urls: 'turn:freestun.net:3478',
             username: 'free',
@@ -232,6 +286,43 @@ function getFallbackIceServers() {
         }
     ];
 }
+
+function safePlayMedia(mediaEl, label) {
+    if (!mediaEl || !mediaEl.srcObject) return;
+    if (!mediaEl.paused) return;
+    try {
+        const playPromise = mediaEl.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch((err) => {
+                if (err && err.name !== 'AbortError') {
+                    console.warn(label || 'Media playback deferred:', err.name || err.message);
+                }
+            });
+        }
+    } catch (e) {}
+}
+
+function unlockMobileMedia() {
+    try {
+        if (audioContext && audioContext.state === 'suspended') {
+            audioContext.resume().catch(() => {});
+        }
+        if (groupAudioContext && groupAudioContext.state === 'suspended') {
+            groupAudioContext.resume().catch(() => {});
+        }
+        if (remoteAudio && remoteAudio.srcObject && remoteAudio.paused) {
+            safePlayMedia(remoteAudio, 'Remote audio unlock');
+        }
+        document.querySelectorAll('audio[id^="remote-audio-"]').forEach(el => {
+            if (el.srcObject && el.paused) safePlayMedia(el, 'Group audio unlock');
+        });
+        document.querySelectorAll('video.participant-video:not(.hidden), video.split-video-feed:not(.hidden)').forEach(el => {
+            if (el.srcObject && el.paused) safePlayMedia(el, 'Video unlock');
+        });
+    } catch (e) {}
+}
+
+document.addEventListener('pointerdown', unlockMobileMedia, { passive: true });
 
 // Helpers
 function showScreen(screenId) {
@@ -514,10 +605,12 @@ function updatePrivateVideoStage() {
         // Local Split Pane
         if (isPrivateCameraOn && privateLocalVideoStream) {
             if (localVideo) {
-                localVideo.srcObject = privateLocalVideoStream;
+                if (localVideo.srcObject !== privateLocalVideoStream) {
+                    localVideo.srcObject = privateLocalVideoStream;
+                }
                 localVideo.style.transform = privateFacingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
                 localVideo.classList.remove('hidden');
-                localVideo.play().catch(e => {});
+                if (localVideo.paused) localVideo.play().catch(() => {});
             }
             if (localPlaceholder) localPlaceholder.classList.add('hidden');
         } else {
@@ -531,9 +624,14 @@ function updatePrivateVideoStage() {
         // Remote Split Pane
         if (isPartnerCameraOn && privateRemoteVideoStream) {
             if (remoteVideo) {
-                remoteVideo.srcObject = privateRemoteVideoStream;
+                remoteVideo.muted = true;
+                if (remoteVideo.srcObject !== privateRemoteVideoStream) {
+                    remoteVideo.srcObject = privateRemoteVideoStream;
+                }
                 remoteVideo.classList.remove('hidden');
-                remoteVideo.play().catch(e => console.warn('Remote video play blocked:', e));
+                if (remoteVideo.paused) {
+                    remoteVideo.play().catch(e => console.warn('Remote video play blocked:', e));
+                }
             }
             if (remotePlaceholder) remotePlaceholder.classList.add('hidden');
         } else {
@@ -591,6 +689,9 @@ async function togglePrivateCamera() {
             if (transceiver) {
                 transceiver.direction = 'sendrecv';
                 await transceiver.sender.replaceTrack(videoTrack);
+                if (typeof transceiver.sender.setStreams === 'function' && privateLocalVideoStream) {
+                    transceiver.sender.setStreams(privateLocalVideoStream);
+                }
             } else {
                 peerConnection.addTransceiver(videoTrack, {
                     direction: 'sendrecv',
@@ -704,6 +805,7 @@ function endSession() {
     signalQueue = [];
     isInitializing = false;
     needsPrivateRenegotiation = false;
+    isPrivateInitiator = false;
     if (peerConnection) {
         peerConnection.onicecandidate = null;
         peerConnection.ontrack = null;
@@ -814,28 +916,35 @@ function stopTimer() {
     clearInterval(timerInterval);
 }
 
-function initVisualizers(localStream, remoteStream) {
-    if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+function initVisualizers(localStreamArg, remoteStream) {
+    try {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+
+        // Local Visualizer (Your Mic)
+        let localAnalyser = null;
+        if (localStreamArg && localStreamArg.getAudioTracks && localStreamArg.getAudioTracks().length > 0) {
+            const localSource = audioContext.createMediaStreamSource(localStreamArg);
+            localAnalyser = audioContext.createAnalyser();
+            localAnalyser.fftSize = 32;
+            localSource.connect(localAnalyser);
+        }
+
+        // Remote Visualizer (Partner Mic)
+        let remoteAnalyser = null;
+        if (remoteStream && remoteStream.getAudioTracks && remoteStream.getAudioTracks().length > 0) {
+            const remoteSource = audioContext.createMediaStreamSource(remoteStream);
+            remoteAnalyser = audioContext.createAnalyser();
+            remoteAnalyser.fftSize = 32;
+            remoteSource.connect(remoteAnalyser);
+        }
+
+        drawVisualizers(localAnalyser, remoteAnalyser);
+    } catch (e) {
+        console.warn('Visualizer setup skipped:', e.message);
     }
-    if (audioContext.state === 'suspended') audioContext.resume();
-
-    // Local Visualizer (Your Mic)
-    const localSource = audioContext.createMediaStreamSource(localStream);
-    const localAnalyser = audioContext.createAnalyser();
-    localAnalyser.fftSize = 32;
-    localSource.connect(localAnalyser);
-
-    // Remote Visualizer (Partner Mic)
-    let remoteAnalyser = null;
-    if (remoteStream) {
-        const remoteSource = audioContext.createMediaStreamSource(remoteStream);
-        remoteAnalyser = audioContext.createAnalyser();
-        remoteAnalyser.fftSize = 32;
-        remoteSource.connect(remoteAnalyser);
-    }
-
-    drawVisualizers(localAnalyser, remoteAnalyser);
 }
 
 function drawVisualizers(localAn, remoteAn) {
@@ -955,35 +1064,43 @@ socket.on('match_found', async (data) => {
 async function initWebRTC(isCaller) {
     if (isInitializing) return;
     isInitializing = true;
+    isPrivateInitiator = !!isCaller;
 
     try {
         console.log('Requesting microphone...');
         callStatus.innerText = 'Please allow microphone...';
 
-        // Try current API, then fallbacks
+        // Try microphone access, but fall back cleanly to listen/chat if blocked or unavailable
         const mediaDevices = navigator.mediaDevices || {};
         const getUserMedia = mediaDevices.getUserMedia ||
             navigator.webkitGetUserMedia ||
             navigator.mozGetUserMedia ||
             navigator.msGetUserMedia;
 
-        if (!getUserMedia) {
-            throw new Error('Microphone blocked by browser security (Network not trusted).');
-        }
-
-        // Use Promise-based version if available, else wrap callback version
-        if (mediaDevices.getUserMedia) {
-            localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (getUserMedia) {
+            try {
+                if (mediaDevices.getUserMedia) {
+                    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                } else {
+                    localStream = await new Promise((res, rej) => getUserMedia.call(navigator, { audio: true }, res, rej));
+                }
+                console.log('Mic access granted.');
+                initVisualizers(localStream, null);
+            } catch (micErr) {
+                console.warn('Mic access skipped (listen-only 1-on-1 fallback):', micErr && micErr.message);
+                localStream = null;
+                isMuted = true;
+                if (muteBtn) muteBtn.classList.add('muted');
+                addMessage('Microphone disabled/unavailable — you can still hear partner, text, and use video.', 'system');
+            }
         } else {
-            localStream = await new Promise((res, rej) => getUserMedia.call(navigator, { audio: true }, res, rej));
+            localStream = null;
         }
-        console.log('Mic access granted.');
-        initVisualizers(localStream, null); // Start local visualizer immediately
 
         callStatus.innerText = 'Connecting...';
 
-        // Fetch fresh TURN credentials for this connection
-        console.log('Fetching TURN server credentials...');
+        // Fetch fresh STUN + TURN credentials for this connection
+        console.log('Fetching ICE server credentials...');
         const iceServers = await getTurnCredentials();
 
         const rtcConfig = {
@@ -995,31 +1112,32 @@ async function initWebRTC(isCaller) {
         console.log("Initializing RTCPeerConnection with config:", JSON.stringify(rtcConfig, null, 2));
         peerConnection = new RTCPeerConnection(rtcConfig);
 
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-        });
+        // Offerer initializes audio+video transceivers upfront; Answerer binds tracks after setRemoteDescription(offer)
+        if (isCaller) {
+            await syncPrivateTracksToPeer(peerConnection);
+        }
 
-        // Monitor connection state - Detailed UI updates
+        // Monitor connection state - Detailed UI updates + resilient ICE restart
         peerConnection.oniceconnectionstatechange = () => {
+            if (!peerConnection) return;
             const state = peerConnection.iceConnectionState;
             console.log('ICE Connection State Change:', state);
 
             if (state === 'checking') {
-                callStatus.innerText = 'Finding person...';
+                callStatus.innerText = 'Connecting audio & video...';
             } else if (state === 'connected' || state === 'completed') {
-                callStatus.innerText = 'Connected - Speaking';
+                callStatus.innerText = localStream ? 'Connected - Speaking' : 'Connected - Listening';
                 if (isPartnerCameraOn && privateRemoteVideoStream) {
                     updatePrivateVideoStage();
                 }
-            } else if (state === 'failed' || state === 'disconnected') {
-                callStatus.innerText = 'Connection Failed';
-                addMessage('Connection failed. Retrying with backup server...', 'system');
-                // Auto-retry once if it fails early
-                if (peerConnection.iceConnectionState === 'failed') {
-                    console.log("Auto-retrying connection...");
-                    socket.emit('manual_disconnect');
-                    setTimeout(() => socket.emit('find_match'), 1000);
+            } else if (state === 'failed') {
+                callStatus.innerText = 'Reconnecting...';
+                if (isPrivateInitiator && typeof peerConnection.restartIce === 'function') {
+                    peerConnection.restartIce();
+                    renegotiatePrivatePeer();
                 }
+            } else if (state === 'disconnected') {
+                callStatus.innerText = 'Reconnecting...';
             } else {
                 callStatus.innerText = 'Status: ' + state;
             }
@@ -1032,28 +1150,34 @@ async function initWebRTC(isCaller) {
         peerConnection.ontrack = (event) => {
             console.log('Got remote track in 1-on-1:', event.track.kind);
             if (event.track.kind === 'audio') {
-                remoteAudio.srcObject = event.streams[0];
+                const audioStream = (event.streams && event.streams[0]) || new MediaStream([event.track]);
+                if (remoteAudio.srcObject !== audioStream) {
+                    remoteAudio.srcObject = audioStream;
+                }
                 remoteAudio.play().then(() => {
                     console.log("Remote audio playing successfully");
                 }).catch(e => {
-                    console.warn("Autoplay blocked or failed:", e);
-                    addMessage("Click anywhere to enable voice.", "system");
+                    if (e && e.name !== 'AbortError') {
+                        console.warn("Audio autoplay blocked:", e);
+                        addMessage("Tap anywhere on screen to unmute partner voice.", "system");
+                    }
                 });
 
-                callStatus.innerText = 'Connected - Speaking';
+                callStatus.innerText = localStream ? 'Connected - Speaking' : 'Connected - Listening';
                 startTimer();
-                initVisualizers(localStream, event.streams[0]); // Update with remote stream
+                initVisualizers(localStream, audioStream);
             } else if (event.track.kind === 'video') {
-                const stream = event.streams[0] || new MediaStream([event.track]);
+                const stream = (event.streams && event.streams[0]) || new MediaStream([event.track]);
                 privateRemoteVideoStream = stream;
                 if (privateRemoteVideo) {
-                    privateRemoteVideo.srcObject = stream;
+                    privateRemoteVideo.muted = true;
+                    if (privateRemoteVideo.srcObject !== stream) {
+                        privateRemoteVideo.srcObject = stream;
+                    }
                 }
                 if (!event.track.muted || isPartnerCameraOn) {
                     isPartnerCameraOn = true;
-                    if (privateRemoteVideo) {
-                        privateRemoteVideo.play().catch(e => console.warn("Remote video play failed:", e));
-                    }
+                    safePlayMedia(privateRemoteVideo, 'Remote video play');
                 }
                 updatePrivateVideoStage();
 
@@ -1062,8 +1186,11 @@ async function initWebRTC(isCaller) {
                     privateRemoteVideoStream = stream;
                     isPartnerCameraOn = true;
                     if (privateRemoteVideo) {
-                        privateRemoteVideo.srcObject = stream;
-                        privateRemoteVideo.play().catch(e => {});
+                        privateRemoteVideo.muted = true;
+                        if (privateRemoteVideo.srcObject !== stream) {
+                            privateRemoteVideo.srcObject = stream;
+                        }
+                        safePlayMedia(privateRemoteVideo, 'Remote video unmute play');
                     }
                     updatePrivateVideoStage();
                 };
@@ -1156,8 +1283,18 @@ socket.on('signal', async (data) => {
 async function handleSignal(data) {
     console.log('Handling signal:', Object.keys(data));
     if (data.offer) {
-        if (peerConnection.signalingState === 'have-local-offer') {
-            await peerConnection.setLocalDescription({ type: 'rollback' });
+        // Perfect Negotiation glare handling so simultaneous camera activation never drops tracks
+        if (peerConnection.signalingState !== 'stable') {
+            if (peerConnection.signalingState === 'have-local-offer') {
+                const isPolite = !isPrivateInitiator;
+                if (isPolite) {
+                    console.log('[1-on-1] Polite peer rolling back offer for glare');
+                    await peerConnection.setLocalDescription({ type: 'rollback' });
+                } else {
+                    console.log('[1-on-1] Impolite peer ignoring collision offer');
+                    return;
+                }
+            }
         }
         console.log('Setting remote description (offer)...');
         await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
@@ -1165,6 +1302,8 @@ async function handleSignal(data) {
             const c = signalQueue.shift();
             try { await peerConnection.addIceCandidate(new RTCIceCandidate(c.candidate)); } catch (e) {}
         }
+        // Always bind local mic & camera onto the Offer's exact transceivers before answering
+        await syncPrivateTracksToPeer(peerConnection);
         console.log('Creating answer...');
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
@@ -1983,8 +2122,10 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
 
         if (event.track.kind === 'audio') {
             const streamToPlay = event.streams[0] || new MediaStream([event.track]);
-            remoteAudioEl.srcObject = streamToPlay;
-            remoteAudioEl.play().catch(e => console.warn('Remote audio play blocked:', e));
+            if (remoteAudioEl.srcObject !== streamToPlay) {
+                remoteAudioEl.srcObject = streamToPlay;
+            }
+            safePlayMedia(remoteAudioEl, 'Remote audio play');
         } else if (event.track.kind === 'video') {
             const cardVideoEl = document.getElementById(`video-${targetMemberId}`);
             const avatarBox = document.getElementById(`avatar-box-${targetMemberId}`);
@@ -1996,7 +2137,16 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
             }
 
             if (cardVideoEl) {
-                cardVideoEl.srcObject = streamToPlay;
+                cardVideoEl.muted = true;
+                if (cardVideoEl.srcObject !== streamToPlay) {
+                    cardVideoEl.srcObject = streamToPlay;
+                }
+                cardVideoEl.onloadeddata = () => {
+                    if (currentPeer && currentPeer.isCameraOn) {
+                        cardVideoEl.classList.remove('hidden');
+                        if (avatarBox) avatarBox.classList.add('hidden');
+                    }
+                };
                 // Only show video if sender camera is actually active / frames are flowing (avoids black box when cam OFF!)
                 if ((currentPeer && currentPeer.isCameraOn) || !event.track.muted) {
                     if (currentPeer) currentPeer.isCameraOn = true;
@@ -2006,7 +2156,7 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
                         camBadge.className = 'media-badge cam-on';
                         camBadge.innerHTML = '<i class="fas fa-video"></i>';
                     }
-                    cardVideoEl.play().catch(e => console.warn('Remote video play blocked:', e));
+                    safePlayMedia(cardVideoEl, 'Remote group video play');
                 }
             }
 
@@ -2014,14 +2164,17 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
                 console.log(`[Group] Video track unmuted for ${targetMemberId}`);
                 if (currentPeer) currentPeer.isCameraOn = true;
                 if (cardVideoEl) {
-                    cardVideoEl.srcObject = streamToPlay;
+                    cardVideoEl.muted = true;
+                    if (cardVideoEl.srcObject !== streamToPlay) {
+                        cardVideoEl.srcObject = streamToPlay;
+                    }
                     cardVideoEl.classList.remove('hidden');
                     if (avatarBox) avatarBox.classList.add('hidden');
                     if (camBadge) {
                         camBadge.className = 'media-badge cam-on';
                         camBadge.innerHTML = '<i class="fas fa-video"></i>';
                     }
-                    cardVideoEl.play().catch(e => {});
+                    safePlayMedia(cardVideoEl, 'Remote group video unmute play');
                 }
             };
 
@@ -2238,12 +2391,13 @@ function applyGroupMediaStateToUi(memberId, state = {}) {
 
         if (state.isCameraOn) {
             if (videoEl) {
+                videoEl.muted = true;
                 if (peer && peer.videoStream) {
                     if (videoEl.srcObject !== peer.videoStream) {
                         videoEl.srcObject = peer.videoStream;
                     }
                     videoEl.classList.remove('hidden');
-                    videoEl.play().catch(e => console.warn('Play video on state change:', e));
+                    safePlayMedia(videoEl, 'Play video on state change');
                 }
             }
             if (avatarBox && peer && peer.videoStream) avatarBox.classList.add('hidden');
@@ -2335,6 +2489,9 @@ async function toggleGroupCamera() {
                 if (transceiver) {
                     transceiver.direction = 'sendrecv';
                     await transceiver.sender.replaceTrack(videoTrack);
+                    if (typeof transceiver.sender.setStreams === 'function' && groupVideoStream) {
+                        transceiver.sender.setStreams(groupVideoStream);
+                    }
                 } else {
                     pc.addTransceiver(videoTrack, { direction: 'sendrecv', streams: [groupVideoStream] });
                 }
