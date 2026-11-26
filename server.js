@@ -352,9 +352,22 @@ async function resolveServerIceConfig() {
         }
     }
 
-    const iceServers = [...DEFAULT_PUBLIC_STUN_SERVERS];
-    const providers = ['public_stun'];
-    let turnConfigured = false;
+    const iceServers = [
+        ...DEFAULT_PUBLIC_STUN_SERVERS,
+        // Open-relay Metered TURN — free, no auth, confirmed reachable
+        {
+            urls: [
+                'turn:global.relay.metered.ca:80',
+                'turn:global.relay.metered.ca:80?transport=tcp',
+                'turn:global.relay.metered.ca:443',
+                'turns:global.relay.metered.ca:443?transport=tcp'
+            ],
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        }
+    ];
+    const providers = ['public_stun', 'openrelay_turn'];
+    let turnConfigured = true;  // openrelayproject is always included
     let cacheTtlMs = 2 * 60 * 1000;
 
     // 2. Cloudflare Realtime TURN (1 TB/month free tier; TLS 443 ready)
