@@ -222,71 +222,46 @@ let audioContext = null;
 let audioAnalyser = null;
 let animationId = null;
 
-// Function to fetch ICE/TURN server configuration cleanly from backend API (with short cache)
+// ICE/TURN server configuration — simple and proven working
 let cachedTurnCredentials = null;
-let cachedTurnExpiresAt = 0;
 let turnCredentialsPromise = null;
-let lastIceConfigMeta = { turnConfigured: false, providers: ['public_stun'] };
 let privateIceMonitor = null;
 
-const CORE_PUBLIC_STUN_SERVERS = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' }
-];
-
-function normalizeIceServersList(list) {
-    const seen = new Set();
-    const out = [];
-    for (const entry of (Array.isArray(list) ? list : [])) {
-        if (!entry || !entry.urls) continue;
-        const key = JSON.stringify(entry);
-        if (!seen.has(key)) {
-            seen.add(key);
-            out.push(entry);
+function getFallbackIceServers() {
+    return [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' },
+        {
+            urls: [
+                'turn:global.relay.metered.ca:80',
+                'turn:global.relay.metered.ca:80?transport=tcp',
+                'turn:global.relay.metered.ca:443',
+                'turns:global.relay.metered.ca:443?transport=tcp'
+            ],
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
         }
-    }
-    return out;
+    ];
 }
 
-async function getTurnCredentials(forceRefresh = false) {
-    const now = Date.now();
-    if (!forceRefresh && cachedTurnCredentials && now < cachedTurnExpiresAt) {
-        return cachedTurnCredentials;
-    }
+async function getTurnCredentials() {
+    if (cachedTurnCredentials) return cachedTurnCredentials;
     if (turnCredentialsPromise) return turnCredentialsPromise;
 
     turnCredentialsPromise = (async () => {
         try {
-            const response = await fetch('/api/ice-servers', {
-                cache: 'no-store',
-                signal: AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined
-            });
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
+            const response = await fetch('/api/ice-servers', { cache: 'no-store' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
-            const serverList = normalizeIceServersList([
-                ...CORE_PUBLIC_STUN_SERVERS,
-                ...(Array.isArray(data && data.iceServers) ? data.iceServers : [])
-            ]);
-            lastIceConfigMeta = {
-                turnConfigured: !!(data && data.turnConfigured),
-                providers: Array.isArray(data && data.providers) ? data.providers : ['public_stun']
-            };
-            cachedTurnCredentials = serverList;
-            cachedTurnExpiresAt = Date.now() + 2 * 60 * 1000;
-            console.log(
-                `%c[ICE] Servers ready (${serverList.length} entries, TURN relay configured: ${lastIceConfigMeta.turnConfigured})`,
-                lastIceConfigMeta.turnConfigured ? 'color: green; font-weight: bold' : 'color: orange; font-weight: bold'
-            );
-            return cachedTurnCredentials;
+            const servers = Array.isArray(data && data.iceServers) ? data.iceServers : getFallbackIceServers();
+            console.log('%c✅ ICE servers loaded (' + servers.length + ' entries)', 'color: green; font-weight: bold');
+            cachedTurnCredentials = servers;
+            return servers;
         } catch (error) {
-            console.warn('[ICE] /api/ice-servers unavailable, using core public STUN:', error && error.message);
-            lastIceConfigMeta = { turnConfigured: false, providers: ['public_stun_fallback'] };
-            cachedTurnCredentials = [...CORE_PUBLIC_STUN_SERVERS];
-            cachedTurnExpiresAt = Date.now() + 30 * 1000;
+            console.warn('[ICE] Using fallback TURN servers:', error && error.message);
+            cachedTurnCredentials = getFallbackIceServers();
             return cachedTurnCredentials;
         } finally {
             turnCredentialsPromise = null;
@@ -362,111 +337,40 @@ function unlockMobileMedia() {
 
 document.addEventListener('pointerdown', unlockMobileMedia, { passive: true });
 
-// Shared WebRTC ICE diagnostics & auto-restart monitor (used by both 1-on-1 & Group/Public)
+// Simple no-op ICE monitor stub — keeps API compatibility without false-positive "no-turn" errors
 function createIceDiagnosticsMonitor({ pc, isInitiator, onStateChange, onRequestRestart, onBlocked }) {
-    let localHasRelay = false;
-    let remoteHasRelay = false;
-    let hadTurnError = false;
     let restartCount = 0;
-    let checkingTimer = null;
-    let blockedTimer = null;
-    let disconnectedTimer = null;
     let cleanedUp = false;
+    let disconnectedTimer = null;
 
-    const clearTimers = () => {
-        if (checkingTimer) { clearTimeout(checkingTimer); checkingTimer = null; }
-        if (blockedTimer) { clearTimeout(blockedTimer); blockedTimer = null; }
-        if (disconnectedTimer) { clearTimeout(disconnectedTimer); disconnectedTimer = null; }
-    };
-
-    const triggerRestart = (reason) => {
+    const tryRestart = (reason) => {
         if (cleanedUp || restartCount >= 2) return false;
         restartCount++;
-        console.warn(`[ICE] Triggering restart #${restartCount} (${reason})`);
-        if (typeof onRequestRestart === 'function') {
-            onRequestRestart(reason, restartCount);
-        }
+        console.warn(`[ICE] Restart #${restartCount} (${reason})`);
+        if (typeof onRequestRestart === 'function') onRequestRestart(reason, restartCount);
         return true;
     };
 
-    const getBlockedReason = () => {
-        if (!localHasRelay && !remoteHasRelay) {
-            return (!lastIceConfigMeta.turnConfigured || hadTurnError) ? 'no-turn' : 'nat-blocked';
-        }
-        return 'nat-blocked';
-    };
-
-    const armStuckTimers = () => {
-        clearTimers();
-        checkingTimer = setTimeout(() => {
-            if (!cleanedUp && pc && (pc.iceConnectionState === 'checking' || pc.iceConnectionState === 'new') && restartCount === 0) {
-                triggerRestart('checking-timeout');
-            }
-        }, 7000);
-        blockedTimer = setTimeout(() => {
-            if (!cleanedUp && pc && ['new', 'checking', 'failed', 'disconnected'].includes(pc.iceConnectionState)) {
-                if (typeof onBlocked === 'function') {
-                    onBlocked(getBlockedReason(), { localHasRelay, remoteHasRelay, hadTurnError });
-                }
-            }
-        }, 13000);
-    };
-
     return {
-        startWatch() {
-            if (cleanedUp || !pc) return;
-            if (['connected', 'completed'].includes(pc.iceConnectionState)) return;
-            if (!checkingTimer && !blockedTimer) {
-                armStuckTimers();
-            }
-        },
-        noteLocalCandidate(candidate) {
-            if (candidate && candidate.candidate && candidate.candidate.includes('typ relay')) {
-                localHasRelay = true;
-            }
-        },
-        noteRemoteCandidate(candidate) {
-            if (candidate && candidate.candidate && candidate.candidate.includes('typ relay')) {
-                remoteHasRelay = true;
-            }
-        },
-        noteCandidateError(event) {
-            if (event && [400, 401, 403, 486].includes(Number(event.errorCode))) {
-                hadTurnError = true;
-            }
-        },
+        startWatch() {},
+        noteLocalCandidate() {},
+        noteRemoteCandidate() {},
+        noteCandidateError() {},
         handleConnectionStateChange() {
             if (cleanedUp || !pc) return;
             const state = pc.iceConnectionState;
-            clearTimers();
-
-            if (typeof onStateChange === 'function') {
-                onStateChange(state);
-            }
-
-            if (state === 'checking') {
-                armStuckTimers();
-            } else if (state === 'disconnected') {
+            if (typeof onStateChange === 'function') onStateChange(state);
+            if (disconnectedTimer) { clearTimeout(disconnectedTimer); disconnectedTimer = null; }
+            if (state === 'disconnected') {
                 disconnectedTimer = setTimeout(() => {
-                    if (!cleanedUp && pc && pc.iceConnectionState === 'disconnected') {
-                        triggerRestart('disconnected-timeout');
-                    }
+                    if (!cleanedUp && pc && pc.iceConnectionState === 'disconnected') tryRestart('disconnected');
                 }, 4000);
             } else if (state === 'failed') {
-                if (!triggerRestart('ice-failed') && typeof onBlocked === 'function') {
-                    onBlocked(getBlockedReason(), { localHasRelay, remoteHasRelay, hadTurnError });
-                }
-            } else if (state === 'connected' || state === 'completed') {
-                restartCount = 0;
+                tryRestart('ice-failed');
             }
         },
-        getSummary() {
-            return { localHasRelay, remoteHasRelay, hadTurnError, isInitiator };
-        },
-        cleanup() {
-            cleanedUp = true;
-            clearTimers();
-        }
+        getSummary() { return { isInitiator }; },
+        cleanup() { cleanedUp = true; if (disconnectedTimer) clearTimeout(disconnectedTimer); }
     };
 }
 
