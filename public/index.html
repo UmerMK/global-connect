@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=7.4">
+    <link rel="stylesheet" href="style.css?v=8.0">
     <style>
         .visualizer-pair {
             display: flex;
@@ -238,6 +238,12 @@
                         </div>
                     </div>
                     <div class="call-controls">
+                        <button id="private-quality-btn" class="icon-btn quality-pill-btn" title="Video Quality & Data Saver">
+                            <i class="fas fa-sliders-h"></i> <span id="private-quality-badge" class="q-badge-text">AUTO</span>
+                        </button>
+                        <button id="private-share-screen-btn" class="icon-btn cam-toggle-btn hidden" title="Share Screen">
+                            <i class="fas fa-desktop"></i>
+                        </button>
                         <button id="private-flip-cam-btn" class="icon-btn cam-toggle-btn flip-trigger hidden" title="Switch Front / Back Camera">
                             <i class="fas fa-sync-alt"></i>
                         </button>
@@ -292,9 +298,24 @@
 
                     <!-- Floating Preview Pill when new message/GIF arrives while messages are hidden -->
                     <button type="button" id="private-toast-preview" class="private-toast-preview hidden"></button>
+                    <!-- Floating Reactions Layer (1-on-1) -->
+                    <div id="private-reaction-layer" class="floating-reaction-layer"></div>
+                </div>
+
+                <!-- Quick Floating Reaction Bar (1-on-1) -->
+                <div id="private-reaction-dock" class="quick-reaction-dock hidden">
+                    <button type="button" class="react-chip-btn" data-emoji="❤️">❤️</button>
+                    <button type="button" class="react-chip-btn" data-emoji="🔥">🔥</button>
+                    <button type="button" class="react-chip-btn" data-emoji="😂">😂</button>
+                    <button type="button" class="react-chip-btn" data-emoji="👏">👏</button>
+                    <button type="button" class="react-chip-btn" data-emoji="💯">💯</button>
+                    <button type="button" class="react-chip-btn" data-emoji="🤯">🤯</button>
                 </div>
 
                 <div class="input-bar">
+                    <button id="private-react-btn" class="icon-btn private-react-btn" title="Send Live Reaction">
+                        <span>😍</span>
+                    </button>
                     <button id="private-gif-btn" class="icon-btn private-gif-btn" title="Search & Send GIFs">
                         <span class="gif-btn-text-xs">GIF</span>
                     </button>
@@ -412,6 +433,9 @@
                             <span id="group-online-count">1</span>
                             <span id="group-online-text" class="viewer-label-text">in room</span>
                         </div>
+                        <button id="group-quality-btn" class="live-quality-header-btn" title="Video Quality & Data Saver">
+                            <i class="fas fa-cog"></i> <span id="group-quality-badge">AUTO</span>
+                        </button>
                         <button id="btn-toggle-live-chat" class="live-chat-toggle-btn" title="Show/Hide Live Chat">
                             <i class="fas fa-comment-dots"></i>
                         </button>
@@ -470,6 +494,18 @@
                             <i class="fas fa-sparkles"></i> Welcome to the live room! Tap the GIF button or chat below.
                         </div>
                     </div>
+                    <!-- Floating Reactions Layer (Group / Public) -->
+                    <div id="group-reaction-layer" class="floating-reaction-layer"></div>
+                </div>
+
+                <!-- Quick Floating Reaction Bar (Group / Public) -->
+                <div id="group-reaction-dock" class="quick-reaction-dock hidden">
+                    <button type="button" class="react-chip-btn" data-emoji="❤️">❤️</button>
+                    <button type="button" class="react-chip-btn" data-emoji="🔥">🔥</button>
+                    <button type="button" class="react-chip-btn" data-emoji="😂">😂</button>
+                    <button type="button" class="react-chip-btn" data-emoji="👏">👏</button>
+                    <button type="button" class="react-chip-btn" data-emoji="💯">💯</button>
+                    <button type="button" class="react-chip-btn" data-emoji="🤯">🤯</button>
                 </div>
 
                 <!-- Bottom Floating Live Action Bar -->
@@ -481,6 +517,10 @@
                         </button>
                     </form>
 
+                    <button id="group-react-btn" class="live-circle-tool-btn react-trigger" title="Send Live Reaction">
+                        <span>😍</span>
+                    </button>
+
                     <button id="btn-toggle-gif-drawer" class="live-circle-tool-btn gif-trigger" title="Search ALL GIFs">
                         <span class="gif-btn-text">GIF</span>
                     </button>
@@ -491,6 +531,10 @@
 
                     <button id="group-cam-btn" class="live-circle-tool-btn cam-trigger cam-disabled" title="Toggle Camera">
                         <i class="fas fa-video-slash"></i>
+                    </button>
+
+                    <button id="group-share-screen-btn" class="live-circle-tool-btn screen-trigger hidden" title="Share Screen">
+                        <i class="fas fa-desktop"></i>
                     </button>
 
                     <button id="group-share-media-btn" class="live-circle-tool-btn upload-trigger" title="Share Photo or File">
@@ -638,12 +682,63 @@
         </div>
     </div>
 
+    <!-- YouTube-Style Video Quality & Student Data Saver Sheet -->
+    <div id="quality-sheet-backdrop" class="gif-drawer-backdrop hidden"></div>
+    <div id="quality-selector-sheet" class="quality-sheet">
+        <div class="gif-sheet-handle-bar"><span class="gif-sheet-handle"></span></div>
+        <div class="quality-sheet-header">
+            <div>
+                <h3><i class="fas fa-sliders-h"></i> Video Quality &amp; Data Saver</h3>
+                <p id="quality-network-status" class="quality-network-sub">Detecting network...</p>
+            </div>
+            <button type="button" id="close-quality-sheet-btn" class="close-sheet-btn" title="Close">&times;</button>
+        </div>
+        <div class="quality-options-list" id="quality-options-list">
+            <button type="button" class="quality-option-btn active" data-quality="auto">
+                <div class="q-opt-main">
+                    <span class="q-opt-title">⚡ Auto (Smart)</span>
+                    <span class="q-opt-desc" id="q-auto-desc">Adapts to Wi-Fi (HD) or Mobile Data (Data Saver)</span>
+                </div>
+                <span class="q-opt-check"><i class="fas fa-check-circle"></i></span>
+            </button>
+            <button type="button" class="quality-option-btn" data-quality="360p">
+                <div class="q-opt-main">
+                    <span class="q-opt-title">🌿 Data Saver (360p)</span>
+                    <span class="q-opt-desc">Uses ~80% less mobile data (both send &amp; receive)</span>
+                </div>
+                <span class="q-opt-check"><i class="fas fa-check-circle"></i></span>
+            </button>
+            <button type="button" class="quality-option-btn" data-quality="480p">
+                <div class="q-opt-main">
+                    <span class="q-opt-title">📱 Standard (480p)</span>
+                    <span class="q-opt-desc">Smooth on 4G mobile data (~650 kbps)</span>
+                </div>
+                <span class="q-opt-check"><i class="fas fa-check-circle"></i></span>
+            </button>
+            <button type="button" class="quality-option-btn" data-quality="720p">
+                <div class="q-opt-main">
+                    <span class="q-opt-title">✨ HD (720p)</span>
+                    <span class="q-opt-desc">Sharp clarity for fast Wi-Fi / 5G (~1.5 Mbps)</span>
+                </div>
+                <span class="q-opt-check"><i class="fas fa-check-circle"></i></span>
+            </button>
+            <button type="button" class="quality-option-btn" data-quality="1080p">
+                <div class="q-opt-main">
+                    <span class="q-opt-title">💎 Full HD (1080p)</span>
+                    <span class="q-opt-desc">Maximum camera clarity on high-speed Wi-Fi (~3 Mbps)</span>
+                </div>
+                <span class="q-opt-check"><i class="fas fa-check-circle"></i></span>
+            </button>
+        </div>
+        <div id="quality-live-stats" class="quality-live-stats">Live stats appear when video is active.</div>
+    </div>
+
     <!-- Hidden audio element for 1-on-1 random chat -->
     <audio id="remote-audio" autoplay></audio>
 
     <!-- Load Socket.IO client library -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="script.js?v=7.4"></script>
+    <script src="script.js?v=8.0"></script>
 </body>
 
 </html>

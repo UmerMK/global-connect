@@ -1,4 +1,4 @@
-console.log("CONNECTED_JS_VERSION: 3.1 - Reliable TURN Servers");
+console.log("CONNECTED_JS_VERSION: 8.0 - Adaptive HD + YouTube Quality Control + Live Reactions");
 if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     alert("CRITICAL: You are using HTTP. WebRTC (Voice) requires HTTPS to work. Redirecting to Secure Site...");
     window.location.href = window.location.href.replace('http:', 'https:');
@@ -53,6 +53,13 @@ let isPrivateChatHidden = false;
 let privateUnreadCount = 0;
 let privateToastTimer = null;
 let needsPrivateRenegotiation = false;
+let privateQualityMode = localStorage.getItem('gc_video_quality') || 'auto';
+let partnerRequestedQuality = null;
+let isPrivateScreenSharing = false;
+let isGroupScreenSharing = false;
+const peerRequestedQualities = new Map();
+const privateShareScreenBtn = document.getElementById('private-share-screen-btn');
+const groupShareScreenBtn = document.getElementById('group-share-screen-btn');
 let isPrivateInitiator = false;
 
 async function syncPrivateTracksToPeer(pc) {
@@ -94,6 +101,7 @@ async function syncPrivateTracksToPeer(pc) {
             } else {
                 pc.addTransceiver(localVideoTrack, { direction: 'sendrecv', streams: [privateLocalVideoStream] });
             }
+            await applySenderVideoQuality(pc, partnerRequestedQuality);
         } else if (videoTransceiver) {
             videoTransceiver.direction = 'recvonly';
             await videoTransceiver.sender.replaceTrack(null);
@@ -658,7 +666,7 @@ function updatePrivateVideoStage() {
                 if (localVideo.srcObject !== privateLocalVideoStream) {
                     localVideo.srcObject = privateLocalVideoStream;
                 }
-                localVideo.style.transform = privateFacingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
+                localVideo.style.transform = (!isPrivateScreenSharing && privateFacingMode === 'user') ? 'scaleX(-1)' : 'scaleX(1)';
                 localVideo.classList.remove('hidden');
                 if (localVideo.paused) localVideo.play().catch(() => {});
             }
@@ -713,13 +721,7 @@ async function togglePrivateCamera() {
         // TURN 1-ON-1 CAMERA ON
         try {
             console.log('[1-on-1] Requesting camera for private call...');
-            try {
-                privateLocalVideoStream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: privateFacingMode }
-                });
-            } catch (err1) {
-                privateLocalVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
-            }
+            privateLocalVideoStream = await requestCameraStreamForQuality(privateFacingMode, false);
 
             isPrivateCameraOn = true;
             if (privateCamBtn) {
@@ -746,6 +748,7 @@ async function togglePrivateCamera() {
                     streams: [privateLocalVideoStream]
                 });
             }
+            await applySenderVideoQuality(peerConnection, partnerRequestedQuality);
 
             // Renegotiate with partner (queued cleanly if initial offer/answer is still settling)
             await renegotiatePrivatePeer();
@@ -761,6 +764,8 @@ async function togglePrivateCamera() {
         // TURN 1-ON-1 CAMERA OFF
         console.log('[1-on-1] Turning camera OFF and releasing webcam hardware...');
         isPrivateCameraOn = false;
+        isPrivateScreenSharing = false;
+        if (privateShareScreenBtn) privateShareScreenBtn.classList.remove('screen-active');
 
         // Stop hardware track immediately
         if (privateLocalVideoStream) {
@@ -799,27 +804,14 @@ async function togglePrivateFlipCamera() {
     const oldStream = privateLocalVideoStream;
 
     try {
-        let newStream = null;
-        try {
-            newStream = await navigator.mediaDevices.getUserMedia({
-                video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: { exact: nextMode } }
-            });
-        } catch (errExact) {
-            try {
-                newStream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: nextMode }
-                });
-            } catch (errFallback) {
-                newStream = await navigator.mediaDevices.getUserMedia({ video: true });
-            }
-        }
-
+        const newStream = await requestCameraStreamForQuality(nextMode, true);
         const newTrack = newStream.getVideoTracks()[0];
         if (!newTrack) throw new Error('No replacement video track found');
 
         const transceiver = getTransceiverByKind(peerConnection, 'video');
         if (transceiver && transceiver.sender) {
             await transceiver.sender.replaceTrack(newTrack);
+            await applySenderVideoQuality(peerConnection, partnerRequestedQuality);
         }
 
         if (oldStream) {
@@ -879,6 +871,11 @@ function endSession() {
     isPrivateCameraOn = false;
     isPartnerCameraOn = false;
     privateFacingMode = 'user';
+    partnerRequestedQuality = null;
+    isPrivateScreenSharing = false;
+    if (privateShareScreenBtn) privateShareScreenBtn.classList.remove('screen-active');
+    const privateReactionDockEl = document.getElementById('private-reaction-dock');
+    if (privateReactionDockEl) privateReactionDockEl.classList.add('hidden');
     isPrivateChatHidden = false;
     privateUnreadCount = 0;
     clearTimeout(privateToastTimer);
@@ -1118,6 +1115,9 @@ async function initWebRTC(isCaller) {
     if (isInitializing) return;
     isInitializing = true;
     isPrivateInitiator = !!isCaller;
+    partnerRequestedQuality = null;
+    isPrivateScreenSharing = false;
+    if (privateShareScreenBtn) privateShareScreenBtn.classList.remove('screen-active');
 
     try {
         console.log('Requesting microphone...');
@@ -1133,7 +1133,13 @@ async function initWebRTC(isCaller) {
         if (getUserMedia) {
             try {
                 if (mediaDevices.getUserMedia) {
-                    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    try {
+                        localStream = await navigator.mediaDevices.getUserMedia({
+                            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                        });
+                    } catch (audioConstraintErr) {
+                        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    }
                 } else {
                     localStream = await new Promise((res, rej) => getUserMedia.call(navigator, { audio: true }, res, rej));
                 }
@@ -1326,6 +1332,7 @@ async function initWebRTC(isCaller) {
             socket.emit('signal', { offer });
             if (privateIceMonitor) privateIceMonitor.startWatch();
         }
+        emitCurrentQualityPref('private');
         playSystemSound('connect');
     } catch (err) {
         console.error('WebRTC Error:', err);
@@ -2044,6 +2051,9 @@ async function initGroupVoiceRoom(existingMembers, options = {}) {
                 isCameraOn: !!member.isCameraOn,
                 isAudioMuted: !!member.isAudioMuted
             });
+            if (member.requestedQuality) {
+                peerRequestedQualities.set(member.memberId, member.requestedQuality);
+            }
             const stableAvatar = getStableAvatarForUser(member.memberId, member.avatarUrl);
             createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, stableAvatar);
             const connPromise = createGroupPeerConnection(member.memberId, member.displayName, true, member.isCameraOn);
@@ -2062,6 +2072,7 @@ async function initGroupVoiceRoom(existingMembers, options = {}) {
     }
 
     updateGroupOnlineCount();
+    emitCurrentQualityPref('group', member.memberId);
     playSystemSound('connect');
 
     // If user explicitly chose "Join With Camera & Voice", activate camera right away
@@ -2133,6 +2144,9 @@ async function syncLocalTracksToPeer(pc) {
             } else {
                 pc.addTransceiver(localVideoTrack, { direction: 'sendrecv', streams: [groupVideoStream] });
             }
+            const peerEntry = Array.from(groupPeers.entries()).find(([, p]) => p.pc === pc);
+            const peerQual = peerEntry ? peerRequestedQualities.get(peerEntry[0]) : null;
+            await applySenderVideoQuality(pc, peerQual);
         } else if (videoTransceiver) {
             videoTransceiver.direction = 'recvonly';
             await videoTransceiver.sender.replaceTrack(null);
@@ -2495,6 +2509,7 @@ socket.on('group_member_joined', async (member) => {
     createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, stableAvatar);
     applyGroupMediaStateToUi(member.memberId, groupMemberMediaStates.get(member.memberId));
     updateGroupOnlineCount();
+    emitCurrentQualityPref('group', member.memberId);
     playSystemSound('connect');
 });
 
@@ -2606,21 +2621,14 @@ async function toggleGroupCamera() {
         // TURN CAMERA ON
         try {
             console.log('[Camera] Requesting webcam video track...');
-            try {
-                groupVideoStream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: groupFacingMode }
-                });
-            } catch (err1) {
-                console.warn('[Camera] Fallback to basic video constraint:', err1);
-                groupVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
-            }
+            groupVideoStream = await requestCameraStreamForQuality(groupFacingMode, false);
 
             isLocalCameraOn = true;
             const videoTrack = groupVideoStream.getVideoTracks()[0];
 
             // Local Preview
             localVideoPreview.srcObject = groupVideoStream;
-            localVideoPreview.style.transform = groupFacingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
+            localVideoPreview.style.transform = (!isGroupScreenSharing && groupFacingMode === 'user') ? 'scaleX(-1)' : 'scaleX(1)';
             localVideoPreview.classList.remove('hidden');
             if (localAvatarBox) localAvatarBox.classList.add('hidden');
             if (groupFlipCamBtn) groupFlipCamBtn.classList.remove('hidden');
@@ -2645,6 +2653,7 @@ async function toggleGroupCamera() {
                 } else {
                     pc.addTransceiver(videoTrack, { direction: 'sendrecv', streams: [groupVideoStream] });
                 }
+                await applySenderVideoQuality(pc, peerRequestedQualities.get(peerId));
                 await renegotiateGroupPeer(peerId, peer);
             }
 
@@ -2660,6 +2669,8 @@ async function toggleGroupCamera() {
         console.log('[Camera] Turning camera OFF and releasing hardware...');
         isLocalCameraOn = false;
         groupFacingMode = 'user';
+        isGroupScreenSharing = false;
+        if (groupShareScreenBtn) groupShareScreenBtn.classList.remove('screen-active');
 
         // 1. Stop all video tracks to immediately turn off webcam LED/hardware
         if (groupVideoStream) {
@@ -2710,30 +2721,17 @@ async function toggleGroupFlipCamera() {
     const oldStream = groupVideoStream;
 
     try {
-        let newStream = null;
-        try {
-            newStream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: { exact: nextMode } }
-            });
-        } catch (errExact) {
-            try {
-                newStream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: nextMode }
-                });
-            } catch (errFallback) {
-                newStream = await navigator.mediaDevices.getUserMedia({ video: true });
-            }
-        }
-
+        const newStream = await requestCameraStreamForQuality(nextMode, true);
         const newTrack = newStream.getVideoTracks()[0];
         if (!newTrack) throw new Error('No replacement camera track');
 
-        for (const peer of groupPeers.values()) {
+        for (const [peerId, peer] of groupPeers.entries()) {
             const pc = peer.pc;
             if (!pc) continue;
             const transceiver = getTransceiverByKind(pc, 'video');
             if (transceiver && transceiver.sender) {
                 await transceiver.sender.replaceTrack(newTrack);
+                await applySenderVideoQuality(pc, peerRequestedQualities.get(peerId));
             }
         }
 
@@ -2986,6 +2984,7 @@ function removeRemoteParticipant(memberId) {
     groupQueuedCandidates.delete(memberId);
     groupMemberNames.delete(memberId);
     groupMemberMediaStates.delete(memberId);
+    peerRequestedQualities.delete(memberId);
 
     const card = document.getElementById(`card-${memberId}`);
     if (card) {
@@ -3087,6 +3086,11 @@ function cleanupGroupMedia() {
     }
     isLocalCameraOn = false;
     groupFacingMode = 'user';
+    isGroupScreenSharing = false;
+    if (groupShareScreenBtn) groupShareScreenBtn.classList.remove('screen-active');
+    peerRequestedQualities.clear();
+    const grpReactionDockEl = document.getElementById('group-reaction-dock');
+    if (grpReactionDockEl) grpReactionDockEl.classList.add('hidden');
     closeGifDrawer();
     if (groupFlipCamBtn) {
         groupFlipCamBtn.classList.add('hidden');
@@ -3783,3 +3787,469 @@ function selectAndSendGif(gifUrl) {
         }
     } catch (e) {}
 })();
+
+// =====================================================================
+// v8.0: YOUTUBE-STYLE VIDEO QUALITY + STUDENT DATA SAVER + SCREEN SHARE
+//       + LIVE FLOATING EMOJI REACTIONS
+// =====================================================================
+const QUALITY_PRESETS = {
+    '360p': { key: '360p', badge: '360p', label: 'Data Saver (360p)', width: 640, height: 360, fps: 18, maxBitrate: 320000, scaleDown: 2.0, degradation: 'maintain-framerate' },
+    '480p': { key: '480p', badge: '480p', label: 'Standard (480p)', width: 854, height: 480, fps: 24, maxBitrate: 650000, scaleDown: 1.4, degradation: 'balanced' },
+    '720p': { key: '720p', badge: 'HD', label: 'HD (720p)', width: 1280, height: 720, fps: 30, maxBitrate: 1500000, scaleDown: 1.0, degradation: 'balanced' },
+    '1080p': { key: '1080p', badge: 'FHD', label: 'Full HD (1080p)', width: 1920, height: 1080, fps: 30, maxBitrate: 3000000, scaleDown: 1.0, degradation: 'maintain-resolution' }
+};
+
+function getNetworkAutoSummary() {
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (!conn) {
+        return { key: '720p', networkLabel: 'Standard Connection • Auto HD (720p)', isMobileData: false };
+    }
+    const saveData = !!conn.saveData;
+    const eff = String(conn.effectiveType || '').toLowerCase();
+    const type = String(conn.type || '').toLowerCase();
+    const downlink = Number(conn.downlink) || 0;
+
+    if (saveData || eff === 'slow-2g' || eff === '2g' || eff === '3g' || (downlink > 0 && downlink < 1.0)) {
+        return { key: '360p', networkLabel: 'Slow / Data Saver • Auto 360p', isMobileData: true };
+    }
+    if (type === 'cellular') {
+        const useLowCellular = downlink > 0 && downlink < 2.5;
+        return {
+            key: useLowCellular ? '360p' : '480p',
+            networkLabel: `Mobile Data (Cellular) • Auto ${useLowCellular ? 'Data Saver (360p)' : 'Standard (480p)'}`,
+            isMobileData: true
+        };
+    }
+    if (type === 'wifi' || type === 'ethernet') {
+        const useFhd = downlink >= 8 || type === 'ethernet';
+        return {
+            key: useFhd ? '1080p' : '720p',
+            networkLabel: `Wi-Fi / Broadband • Auto ${useFhd ? 'Full HD (1080p)' : 'HD (720p)'}`,
+            isMobileData: false
+        };
+    }
+    // Desktop / browsers that omit connection.type and report effectiveType: '4g'
+    if (downlink >= 8) {
+        return { key: '1080p', networkLabel: 'Fast Network • Auto Full HD (1080p)', isMobileData: false };
+    }
+    return { key: '720p', networkLabel: 'Good Network • Auto HD (720p)', isMobileData: false };
+}
+
+function getEffectiveQualityProfile() {
+    const autoInfo = getNetworkAutoSummary();
+    const chosenKey = QUALITY_PRESETS[privateQualityMode] ? privateQualityMode : autoInfo.key;
+    return {
+        mode: privateQualityMode,
+        profile: QUALITY_PRESETS[chosenKey] || QUALITY_PRESETS['720p'],
+        autoInfo
+    };
+}
+
+function pickStrictQualityCap(localProfile, remotePref) {
+    if (!remotePref || !remotePref.maxBitrate || remotePref.maxBitrate <= 0) {
+        return localProfile;
+    }
+    const cappedBitrate = Math.min(localProfile.maxBitrate, Number(remotePref.maxBitrate));
+    const cappedHeight = Math.min(localProfile.height, Number(remotePref.maxHeight) || localProfile.height);
+    const cappedFps = Math.min(localProfile.fps, Number(remotePref.maxFramerate) || localProfile.fps);
+    let scaleDown = localProfile.scaleDown || 1.0;
+    if (cappedHeight <= 360) scaleDown = Math.max(scaleDown, 2.0);
+    else if (cappedHeight <= 480) scaleDown = Math.max(scaleDown, 1.4);
+
+    return {
+        ...localProfile,
+        maxBitrate: cappedBitrate,
+        fps: cappedFps,
+        scaleDown,
+        degradation: cappedHeight <= 360 ? 'maintain-framerate' : localProfile.degradation
+    };
+}
+
+async function applySenderVideoQuality(pc, remotePref = null) {
+    if (!pc || typeof pc.getSenders !== 'function') return;
+    const { profile } = getEffectiveQualityProfile();
+    const cap = pickStrictQualityCap(profile, remotePref);
+
+    for (const sender of pc.getSenders()) {
+        if (!sender || !sender.track || sender.track.kind !== 'video') continue;
+        if (typeof sender.getParameters !== 'function' || typeof sender.setParameters !== 'function') continue;
+        try {
+            const params = sender.getParameters() || {};
+            if (!Array.isArray(params.encodings) || params.encodings.length === 0) {
+                params.encodings = [{}];
+            }
+            params.encodings[0].maxBitrate = cap.maxBitrate;
+            params.encodings[0].maxFramerate = cap.fps;
+            params.encodings[0].scaleResolutionDownBy = cap.scaleDown;
+            try {
+                params.degradationPreference = cap.degradation;
+            } catch (e) {}
+            await sender.setParameters(params);
+        } catch (err) {
+            // Fallback without optional fields if a mobile browser rejects one parameter
+            try {
+                const retryParams = sender.getParameters() || {};
+                if (!Array.isArray(retryParams.encodings) || retryParams.encodings.length === 0) {
+                    retryParams.encodings = [{}];
+                }
+                retryParams.encodings[0].maxBitrate = cap.maxBitrate;
+                await sender.setParameters(retryParams);
+            } catch (e2) {}
+        }
+    }
+}
+
+async function requestCameraStreamForQuality(facingMode, exactFacing = false) {
+    const { profile } = getEffectiveQualityProfile();
+    const facingConstraint = exactFacing ? { exact: facingMode } : facingMode;
+    const attempts = [
+        {
+            video: {
+                width: { ideal: profile.width, min: 320 },
+                height: { ideal: profile.height, min: 240 },
+                frameRate: { ideal: profile.fps, max: 30 },
+                facingMode: facingConstraint
+            }
+        },
+        { video: { facingMode: facingConstraint } },
+        { video: { facingMode } },
+        { video: true }
+    ];
+    let lastErr = null;
+    for (const constraints of attempts) {
+        try {
+            return await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (err) {
+            lastErr = err;
+        }
+    }
+    throw lastErr || new Error('Camera unavailable');
+}
+
+async function applyConstraintsToStream(stream) {
+    if (!stream) return;
+    const track = stream.getVideoTracks()[0];
+    if (!track || typeof track.applyConstraints !== 'function') return;
+    const { profile } = getEffectiveQualityProfile();
+    try {
+        await track.applyConstraints({
+            width: { ideal: profile.width, min: 320 },
+            height: { ideal: profile.height, min: 240 },
+            frameRate: { ideal: profile.fps, max: 30 }
+        });
+    } catch (e) {}
+}
+
+function emitCurrentQualityPref(scope = 'both', targetMemberId = null) {
+    const { mode, profile } = getEffectiveQualityProfile();
+    const payload = {
+        preset: mode === 'auto' ? `auto:${profile.key}` : profile.key,
+        maxWidth: profile.width,
+        maxHeight: profile.height,
+        maxBitrate: profile.maxBitrate,
+        maxFramerate: profile.fps
+    };
+    if ((scope === 'private' || scope === 'both') && peerConnection) {
+        socket.emit('private_quality_pref', payload);
+    }
+    if ((scope === 'group' || scope === 'both') && currentGroupPin) {
+        socket.emit('group_quality_pref', targetMemberId ? { ...payload, to: targetMemberId } : payload);
+    }
+}
+
+function updateQualityUiBadges() {
+    const { mode, profile, autoInfo } = getEffectiveQualityProfile();
+    const badgeLabel = mode === 'auto' ? `AUTO` : profile.badge;
+    const isSaver = profile.key === '360p' || profile.key === '480p';
+    const isHd = profile.key === '720p' || profile.key === '1080p';
+
+    const pairs = [
+        [document.getElementById('private-quality-btn'), document.getElementById('private-quality-badge')],
+        [document.getElementById('group-quality-btn'), document.getElementById('group-quality-badge')]
+    ];
+    for (const [btn, span] of pairs) {
+        if (span) span.innerText = badgeLabel;
+        if (btn) {
+            btn.classList.toggle('is-saver', isSaver);
+            btn.classList.toggle('is-hd', isHd && !isSaver);
+            btn.title = `Video Quality: ${mode === 'auto' ? autoInfo.networkLabel : profile.label}`;
+        }
+    }
+
+    const netEl = document.getElementById('quality-network-status');
+    if (netEl) netEl.innerText = autoInfo.networkLabel;
+    const autoDesc = document.getElementById('q-auto-desc');
+    if (autoDesc) autoDesc.innerText = `Currently: ${profile.label} (switches automatically with network)`;
+
+    document.querySelectorAll('#quality-options-list .quality-option-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.quality === privateQualityMode);
+    });
+}
+
+async function setVideoQualityPreference(mode) {
+    privateQualityMode = (mode === 'auto' || QUALITY_PRESETS[mode]) ? mode : 'auto';
+    try { localStorage.setItem('gc_video_quality', privateQualityMode); } catch (e) {}
+    updateQualityUiBadges();
+
+    if (isPrivateCameraOn && privateLocalVideoStream && !isPrivateScreenSharing) {
+        await applyConstraintsToStream(privateLocalVideoStream);
+    }
+    if (isLocalCameraOn && groupVideoStream && !isGroupScreenSharing) {
+        await applyConstraintsToStream(groupVideoStream);
+    }
+    if (peerConnection) {
+        await applySenderVideoQuality(peerConnection, partnerRequestedQuality);
+    }
+    for (const [peerId, peer] of groupPeers.entries()) {
+        if (peer && peer.pc) {
+            await applySenderVideoQuality(peer.pc, peerRequestedQualities.get(peerId));
+        }
+    }
+    emitCurrentQualityPref('both');
+}
+
+function updateQualityLiveStatsPanel() {
+    const statsEl = document.getElementById('quality-live-stats');
+    if (!statsEl) return;
+    const parts = [];
+    if (privateRemoteVideo && privateRemoteVideo.videoWidth > 0 && !privateRemoteVideo.classList.contains('hidden')) {
+        parts.push(`Partner: ${privateRemoteVideo.videoWidth}x${privateRemoteVideo.videoHeight}`);
+    }
+    if (privateLocalVideo && privateLocalVideo.videoWidth > 0 && !privateLocalVideo.classList.contains('hidden')) {
+        parts.push(`You: ${privateLocalVideo.videoWidth}x${privateLocalVideo.videoHeight}`);
+    }
+    if (localVideoPreview && localVideoPreview.videoWidth > 0 && !localVideoPreview.classList.contains('hidden')) {
+        parts.push(`You: ${localVideoPreview.videoWidth}x${localVideoPreview.videoHeight}`);
+    }
+    document.querySelectorAll('video[id^="video-"]:not(.hidden)').forEach(v => {
+        if (v.videoWidth > 0) parts.push(`Remote: ${v.videoWidth}x${v.videoHeight}`);
+    });
+    const { profile } = getEffectiveQualityProfile();
+    statsEl.innerText = parts.length > 0
+        ? `Live: ${parts.join(' | ')} (Target max ${(profile.maxBitrate / 1000).toFixed(0)} kbps)`
+        : `Target: ${profile.label} (~${(profile.maxBitrate / 1000).toFixed(0)} kbps max) — Turn on video to view live pixels`;
+}
+
+// Incoming peer quality preference handlers (two-way student data saver!)
+socket.on('private_quality_pref', async (pref) => {
+    partnerRequestedQuality = pref || null;
+    if (peerConnection) {
+        await applySenderVideoQuality(peerConnection, partnerRequestedQuality);
+    }
+    if (pref && pref.maxHeight) {
+        const label = pref.maxHeight <= 360 ? 'Data Saver (360p)' : `${pref.maxHeight}p`;
+        addMessage(`📉 Partner set quality to ${label} — adapting your video to save their data.`, 'system');
+    }
+});
+
+socket.on('group_quality_pref', async (pref) => {
+    if (!pref || !pref.memberId) return;
+    peerRequestedQualities.set(pref.memberId, pref);
+    const peer = groupPeers.get(pref.memberId);
+    if (peer && peer.pc) {
+        await applySenderVideoQuality(peer.pc, pref);
+    }
+});
+
+// Wire Quality Sheet open/close/options
+const qualitySheetEl = document.getElementById('quality-selector-sheet');
+const qualityBackdropEl = document.getElementById('quality-sheet-backdrop');
+function openQualitySheet() {
+    updateQualityUiBadges();
+    updateQualityLiveStatsPanel();
+    if (qualityBackdropEl) qualityBackdropEl.classList.remove('hidden');
+    if (qualitySheetEl) qualitySheetEl.classList.add('open');
+}
+function closeQualitySheet() {
+    if (qualityBackdropEl) qualityBackdropEl.classList.add('hidden');
+    if (qualitySheetEl) qualitySheetEl.classList.remove('open');
+}
+document.getElementById('private-quality-btn')?.addEventListener('click', openQualitySheet);
+document.getElementById('group-quality-btn')?.addEventListener('click', openQualitySheet);
+document.getElementById('close-quality-sheet-btn')?.addEventListener('click', closeQualitySheet);
+qualityBackdropEl?.addEventListener('click', closeQualitySheet);
+document.querySelectorAll('#quality-options-list .quality-option-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        await setVideoQualityPreference(btn.dataset.quality);
+        closeQualitySheet();
+    });
+});
+if (navigator.connection && typeof navigator.connection.addEventListener === 'function') {
+    navigator.connection.addEventListener('change', () => {
+        if (privateQualityMode === 'auto') setVideoQualityPreference('auto');
+        else updateQualityUiBadges();
+    });
+}
+updateQualityUiBadges();
+
+// ===== Floating Emoji Live Reactions (1-on-1 & Group/Public) =====
+function spawnFloatingReaction(layerEl, emoji) {
+    if (!layerEl || !emoji) return;
+    const bubble = document.createElement('span');
+    bubble.className = 'floating-emoji-bubble';
+    bubble.innerText = emoji;
+    bubble.style.left = `${14 + Math.random() * 72}%`;
+    bubble.style.setProperty('--drift-x', `${Math.round((Math.random() - 0.5) * 44)}px`);
+    layerEl.appendChild(bubble);
+    setTimeout(() => bubble.remove(), 2200);
+}
+
+function wireReactionControls({ btnId, dockId, layerId, emitFn }) {
+    const btn = document.getElementById(btnId);
+    const dock = document.getElementById(dockId);
+    const layer = document.getElementById(layerId);
+    if (!btn || !dock) return;
+    btn.addEventListener('click', () => dock.classList.toggle('hidden'));
+    dock.querySelectorAll('.react-chip-btn').forEach(chip => {
+        chip.addEventListener('click', () => {
+            const emoji = chip.dataset.emoji;
+            if (!emoji) return;
+            spawnFloatingReaction(layer, emoji);
+            emitFn(emoji);
+        });
+    });
+}
+
+wireReactionControls({
+    btnId: 'private-react-btn',
+    dockId: 'private-reaction-dock',
+    layerId: 'private-reaction-layer',
+    emitFn: (emoji) => socket.emit('private_reaction', { emoji })
+});
+wireReactionControls({
+    btnId: 'group-react-btn',
+    dockId: 'group-reaction-dock',
+    layerId: 'group-reaction-layer',
+    emitFn: (emoji) => socket.emit('group_reaction', { emoji })
+});
+socket.on('private_reaction', ({ emoji } = {}) => {
+    spawnFloatingReaction(document.getElementById('private-reaction-layer'), emoji);
+});
+socket.on('group_reaction', ({ emoji } = {}) => {
+    spawnFloatingReaction(document.getElementById('group-reaction-layer'), emoji);
+});
+
+// ===== In-Call Screen Sharing (Desktop & Android Chrome; auto-hidden if unsupported) =====
+if (navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') {
+    if (privateShareScreenBtn) privateShareScreenBtn.classList.remove('hidden');
+    if (groupShareScreenBtn) groupShareScreenBtn.classList.remove('hidden');
+}
+
+async function stopPrivateScreenShare() {
+    if (!isPrivateScreenSharing) return;
+    isPrivateScreenSharing = false;
+    if (privateShareScreenBtn) privateShareScreenBtn.classList.remove('screen-active');
+    if (isPrivateCameraOn) {
+        // Toggle off twice to clean stream cleanly
+        isPrivateCameraOn = true;
+        await togglePrivateCamera();
+    }
+}
+
+async function togglePrivateScreenShare() {
+    if (!peerConnection) return alert('Connect to a partner first!');
+    if (isPrivateScreenSharing) {
+        await stopPrivateScreenShare();
+        return;
+    }
+    try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+        const screenTrack = screenStream.getVideoTracks()[0];
+        if (!screenTrack) return;
+        if (privateLocalVideoStream) {
+            privateLocalVideoStream.getTracks().forEach(t => t.stop());
+        }
+        privateLocalVideoStream = screenStream;
+        isPrivateCameraOn = true;
+        isPrivateScreenSharing = true;
+        if (privateShareScreenBtn) privateShareScreenBtn.classList.add('screen-active');
+        if (privateFlipCamBtn) privateFlipCamBtn.classList.add('hidden');
+
+        screenTrack.onended = () => {
+            if (isPrivateScreenSharing) stopPrivateScreenShare();
+        };
+
+        const transceiver = getTransceiverByKind(peerConnection, 'video');
+        if (transceiver) {
+            transceiver.direction = 'sendrecv';
+            await transceiver.sender.replaceTrack(screenTrack);
+            if (typeof transceiver.sender.setStreams === 'function') {
+                transceiver.sender.setStreams(screenStream);
+            }
+        } else {
+            peerConnection.addTransceiver(screenTrack, { direction: 'sendrecv', streams: [screenStream] });
+        }
+        await applySenderVideoQuality(peerConnection, partnerRequestedQuality);
+        await renegotiatePrivatePeer();
+        socket.emit('private_camera_toggle', { isCameraOn: true });
+        updatePrivateVideoStage();
+    } catch (err) {
+        console.warn('[1-on-1] Screen share cancelled/failed:', err);
+    }
+}
+
+async function stopGroupScreenShare() {
+    if (!isGroupScreenSharing) return;
+    isGroupScreenSharing = false;
+    if (groupShareScreenBtn) groupShareScreenBtn.classList.remove('screen-active');
+    if (isLocalCameraOn) {
+        await toggleGroupCamera();
+    }
+}
+
+async function toggleGroupScreenShare() {
+    if (isGroupScreenSharing) {
+        await stopGroupScreenShare();
+        return;
+    }
+    try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+        const screenTrack = screenStream.getVideoTracks()[0];
+        if (!screenTrack) return;
+        if (groupVideoStream) {
+            groupVideoStream.getTracks().forEach(t => t.stop());
+        }
+        groupVideoStream = screenStream;
+        isLocalCameraOn = true;
+        isGroupScreenSharing = true;
+        if (groupShareScreenBtn) groupShareScreenBtn.classList.add('screen-active');
+        if (groupFlipCamBtn) groupFlipCamBtn.classList.add('hidden');
+
+        if (localVideoPreview) {
+            localVideoPreview.srcObject = groupVideoStream;
+            localVideoPreview.style.transform = 'scaleX(1)';
+            localVideoPreview.classList.remove('hidden');
+        }
+        if (localAvatarBox) localAvatarBox.classList.add('hidden');
+        if (localCamIndicator) {
+            localCamIndicator.className = 'media-badge cam-on';
+            localCamIndicator.innerHTML = '<i class="fas fa-desktop"></i>';
+        }
+
+        screenTrack.onended = () => {
+            if (isGroupScreenSharing) stopGroupScreenShare();
+        };
+
+        for (const [peerId, peer] of groupPeers.entries()) {
+            if (!peer || !peer.pc) continue;
+            const transceiver = getTransceiverByKind(peer.pc, 'video');
+            if (transceiver) {
+                transceiver.direction = 'sendrecv';
+                await transceiver.sender.replaceTrack(screenTrack);
+                if (typeof transceiver.sender.setStreams === 'function') {
+                    transceiver.sender.setStreams(screenStream);
+                }
+            } else {
+                peer.pc.addTransceiver(screenTrack, { direction: 'sendrecv', streams: [screenStream] });
+            }
+            await applySenderVideoQuality(peer.pc, peerRequestedQualities.get(peerId));
+            await renegotiateGroupPeer(peerId, peer);
+        }
+        socket.emit('group_media_state', { isCameraOn: true });
+    } catch (err) {
+        console.warn('[Group] Screen share cancelled/failed:', err);
+    }
+}
+
+privateShareScreenBtn?.addEventListener('click', togglePrivateScreenShare);
+groupShareScreenBtn?.addEventListener('click', toggleGroupScreenShare);

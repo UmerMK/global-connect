@@ -293,6 +293,7 @@ function handleLeaveGroup(socket) {
     socket.isGroupOwner = null;
     socket.isCameraOn = null;
     socket.isAudioMuted = null;
+    socket.requestedQuality = null;
 
     if (pin === PUBLIC_LIVE_PIN) {
         broadcastPublicLiveCount();
@@ -536,6 +537,25 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('private_quality_pref', (data) => {
+        if (socket.peerId && data) {
+            io.to(socket.peerId).emit('private_quality_pref', {
+                preset: String(data.preset || 'auto').slice(0, 20),
+                maxWidth: Number(data.maxWidth) || 0,
+                maxHeight: Number(data.maxHeight) || 0,
+                maxBitrate: Number(data.maxBitrate) || 0,
+                maxFramerate: Number(data.maxFramerate) || 0
+            });
+        }
+    });
+
+    socket.on('private_reaction', (data) => {
+        if (socket.roomId && data && data.emoji) {
+            const safeEmoji = String(data.emoji).slice(0, 8);
+            socket.to(socket.roomId).emit('private_reaction', { emoji: safeEmoji });
+        }
+    });
+
     socket.on('manual_disconnect', () => {
         waitingUsers = waitingUsers.filter(user => user.id !== socket.id);
         if (socket.peerId) {
@@ -629,7 +649,8 @@ io.on('connection', (socket) => {
                         avatarUrl: s.userAvatar,
                         isOwner: false,
                         isCameraOn: !!s.isCameraOn,
-                        isAudioMuted: !!s.isAudioMuted
+                        isAudioMuted: !!s.isAudioMuted,
+                        requestedQuality: s.requestedQuality || null
                     });
                 }
             }
@@ -728,7 +749,8 @@ io.on('connection', (socket) => {
                         avatarUrl: s.userAvatar,
                         isOwner: s.isGroupOwner,
                         isCameraOn: !!s.isCameraOn,
-                        isAudioMuted: !!s.isAudioMuted
+                        isAudioMuted: !!s.isAudioMuted,
+                        requestedQuality: s.requestedQuality || null
                     });
                 }
             }
@@ -815,6 +837,38 @@ io.on('connection', (socket) => {
         };
         io.to(socketRoom).emit('group_chat_message', payload);
         if (typeof callback === 'function') callback({ success: true, payload });
+    });
+
+    // Per-viewer requested receive quality (Data Saver / 480p / 720p / 1080p)
+    socket.on('group_quality_pref', (data = {}) => {
+        if (!socket.groupPin) return;
+        const payload = {
+            memberId: socket.id,
+            preset: String(data.preset || 'auto').slice(0, 20),
+            maxWidth: Number(data.maxWidth) || 0,
+            maxHeight: Number(data.maxHeight) || 0,
+            maxBitrate: Number(data.maxBitrate) || 0,
+            maxFramerate: Number(data.maxFramerate) || 0
+        };
+        socket.requestedQuality = payload;
+        if (data.to) {
+            const target = io.sockets.sockets.get(data.to);
+            if (target && target.groupPin === socket.groupPin) {
+                target.emit('group_quality_pref', payload);
+            }
+        } else {
+            socket.to(`group_${socket.groupPin}`).emit('group_quality_pref', payload);
+        }
+    });
+
+    // Floating live emoji reactions in Public & Group calls
+    socket.on('group_reaction', ({ emoji } = {}) => {
+        if (!socket.groupPin || !emoji) return;
+        socket.to(`group_${socket.groupPin}`).emit('group_reaction', {
+            memberId: socket.id,
+            senderName: socket.displayName || 'Friend',
+            emoji: String(emoji).slice(0, 8)
+        });
     });
 
     // ==========================================

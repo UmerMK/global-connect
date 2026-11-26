@@ -3184,3 +3184,266 @@ main {
     border-color: rgba(251, 191, 36, 0.45);
     color: #fef3c7;
 }
+
+/* ===== v8.0 YouTube Quality / Student Data Saver, Reactions & Screen Share ===== */
+.quality-pill-btn,
+.live-quality-header-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    width: auto !important;
+    min-width: 58px;
+    height: 34px;
+    padding: 0 10px !important;
+    border-radius: 999px !important;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: #f8fafc;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.quality-pill-btn:hover,
+.live-quality-header-btn:hover {
+    background: rgba(255, 255, 255, 0.16);
+}
+
+.quality-pill-btn.is-saver,
+.live-quality-header-btn.is-saver {
+    background: rgba(16, 185, 129, 0.22);
+    border-color: rgba(52, 211, 153, 0.55);
+    color: #6ee7b7;
+}
+
+.quality-pill-btn.is-hd,
+.live-quality-header-btn.is-hd {
+    background: rgba(56, 189, 248, 0.2);
+    border-color: rgba(56, 189, 248, 0.55);
+    color: #7dd3fc;
+}
+
+.icon-btn.screen-active,
+.live-circle-tool-btn.screen-active {
+    background: linear-gradient(135deg, #0ea5e9, #6366f1) !important;
+    color: #fff !important;
+    border-color: rgba(125, 211, 252, 0.6) !important;
+}
+
+.quality-sheet {
+    position: fixed;
+    left: 50%;
+    bottom: 0;
+    transform: translate(-50%, 105%);
+    width: 100%;
+    max-width: 520px;
+    background: rgba(12, 14, 24, 0.97);
+    border-top: 1px solid rgba(255, 255, 255, 0.14);
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 24px 24px 0 0;
+    padding: 8px 16px max(18px, env(safe-area-inset-bottom, 18px));
+    z-index: 1200;
+    transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+}
+
+.quality-sheet.open {
+    transform: translate(-50%, 0);
+}
+
+.quality-sheet-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 2px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.quality-sheet-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 800;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.quality-network-sub {
+    margin: 3px 0 0;
+    font-size: 0.76rem;
+    color: #94a3b8;
+}
+
+.quality-options-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.quality-option-btn {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    padding: 11px 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.04);
+    color: #f8fafc;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.18s ease;
+    font-family: inherit;
+}
+
+.quality-option-btn:hover {
+    background: rgba(255, 255, 255, 0.09);
+}
+
+.quality-option-btn.active {
+    background: linear-gradient(135deg, rgba(255, 45, 117, 0.18), rgba(124, 58, 237, 0.22));
+    border-color: rgba(244, 114, 182, 0.65);
+}
+
+.q-opt-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.q-opt-title {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.q-opt-desc {
+    font-size: 0.74rem;
+    color: #94a3b8;
+}
+
+.q-opt-check {
+    font-size: 1.05rem;
+    color: rgba(255, 255, 255, 0.15);
+    flex-shrink: 0;
+}
+
+.quality-option-btn.active .q-opt-check {
+    color: #fb7185;
+}
+
+.quality-live-stats {
+    margin-top: 12px;
+    padding: 9px 12px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    font-size: 0.75rem;
+    color: #cbd5e1;
+    text-align: center;
+}
+
+/* Floating Emoji Reactions */
+.floating-reaction-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+    z-index: 25;
+}
+
+.floating-emoji-bubble {
+    position: absolute;
+    bottom: 14px;
+    font-size: 2rem;
+    line-height: 1;
+    filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5));
+    animation: floatReactionUp 2.1s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    will-change: transform, opacity;
+}
+
+@keyframes floatReactionUp {
+    0% {
+        transform: translateY(0) scale(0.55) rotate(-8deg);
+        opacity: 0;
+    }
+    15% {
+        transform: translateY(-28px) scale(1.18) rotate(6deg);
+        opacity: 1;
+    }
+    70% {
+        opacity: 1;
+    }
+    100% {
+        transform: translateY(-230px) translateX(var(--drift-x, 12px)) scale(0.9) rotate(-6deg);
+        opacity: 0;
+    }
+}
+
+.quick-reaction-dock {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 7px 12px;
+    margin: 0 auto 4px;
+    background: rgba(14, 16, 28, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 999px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    z-index: 30;
+}
+
+.quick-reaction-dock.hidden {
+    display: none !important;
+}
+
+.react-chip-btn {
+    border: none;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 50%;
+    width: 38px;
+    height: 38px;
+    font-size: 1.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.react-chip-btn:active,
+.react-chip-btn:hover {
+    transform: scale(1.2);
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.private-react-btn {
+    font-size: 1rem;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+@media (max-width: 440px) {
+    .quality-pill-btn,
+    .live-quality-header-btn {
+        min-width: 48px;
+        height: 30px;
+        padding: 0 7px !important;
+        font-size: 0.65rem;
+    }
+    .quality-pill-btn i,
+    .live-quality-header-btn i {
+        font-size: 0.72rem;
+    }
+}
