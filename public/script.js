@@ -1,5 +1,5 @@
 console.log("CONNECTED_JS_VERSION: 3.1 - Reliable TURN Servers");
-if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost') {
+if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     alert("CRITICAL: You are using HTTP. WebRTC (Voice) requires HTTPS to work. Redirecting to Secure Site...");
     window.location.href = window.location.href.replace('http:', 'https:');
 }
@@ -34,6 +34,8 @@ const userCountDisplay = document.getElementById('user-count');
 
 // 1-on-1 Private Video Elements & State
 const privateCamBtn = document.getElementById('private-cam-btn');
+const privateFlipCamBtn = document.getElementById('private-flip-cam-btn');
+const privateGifBtn = document.getElementById('private-gif-btn');
 const privateVideoStage = document.getElementById('private-video-stage');
 const privateRemoteVideo = document.getElementById('private-remote-video');
 const privateLocalVideo = document.getElementById('private-local-video');
@@ -41,7 +43,9 @@ let privateLocalVideoStream = null;
 let privateRemoteVideoStream = null;
 let isPrivateCameraOn = false;
 let isPartnerCameraOn = false;
+let privateFacingMode = 'user';
 const groupMemberNames = new Map();
+const groupMemberMediaStates = new Map();
 
 // Helper to cleanly find the exact transceiver for audio or video without crossing media types
 function getTransceiverByKind(pc, kind) {
@@ -260,6 +264,20 @@ function addMessage(text, type) {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
+function addPrivateGifMessage(gifUrl, type) {
+    if (!messagesContainer || !gifUrl) return;
+    const div = document.createElement('div');
+    div.className = `msg ${type} msg-gif-bubble`;
+    const img = document.createElement('img');
+    img.src = gifUrl;
+    img.alt = 'GIF';
+    img.className = 'msg-gif-img';
+    img.loading = 'lazy';
+    div.appendChild(img);
+    messagesContainer.appendChild(div);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
 // Event Listeners
 startBtn.addEventListener('click', () => {
     showScreen('waiting-screen');
@@ -325,6 +343,21 @@ muteBtn.addEventListener('click', toggleMute);
 if (privateCamBtn) {
     privateCamBtn.addEventListener('click', togglePrivateCamera);
 }
+if (privateFlipCamBtn) {
+    privateFlipCamBtn.addEventListener('click', togglePrivateFlipCamera);
+}
+if (privateGifBtn) {
+    privateGifBtn.addEventListener('click', () => {
+        if (!gifKeyboardDrawer) return;
+        gifDrawerTarget = 'private';
+        const isOpen = gifKeyboardDrawer.classList.toggle('is-open');
+        privateGifBtn.classList.toggle('active', isOpen);
+        if (gifDrawerBackdrop) gifDrawerBackdrop.classList.toggle('hidden', !isOpen);
+        if (isOpen && (!gifSheetGrid.children.length || gifSheetGrid.querySelector('.gif-loading-state'))) {
+            loadGifsForCategory(currentGifCategory);
+        }
+    });
+}
 if (chatScreen) {
     chatScreen.addEventListener('click', () => {
         if (remoteAudio && remoteAudio.paused && remoteAudio.srcObject) {
@@ -361,6 +394,7 @@ function updatePrivateVideoStage() {
         if (isPrivateCameraOn && privateLocalVideoStream) {
             if (localVideo) {
                 localVideo.srcObject = privateLocalVideoStream;
+                localVideo.style.transform = privateFacingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
                 localVideo.classList.remove('hidden');
                 localVideo.play().catch(e => {});
             }
@@ -408,7 +442,7 @@ async function togglePrivateCamera() {
             console.log('[1-on-1] Requesting camera for private call...');
             try {
                 privateLocalVideoStream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
+                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: privateFacingMode }
                 });
             } catch (err1) {
                 privateLocalVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -419,6 +453,9 @@ async function togglePrivateCamera() {
                 privateCamBtn.classList.add('active');
                 const camIcon = privateCamBtn.querySelector('i');
                 if (camIcon) camIcon.className = 'fas fa-video';
+            }
+            if (privateFlipCamBtn) {
+                privateFlipCamBtn.classList.remove('hidden');
             }
 
             // Attach video track cleanly to 1-on-1 RTCPeerConnection
@@ -467,6 +504,9 @@ async function togglePrivateCamera() {
             const camIcon = privateCamBtn.querySelector('i');
             if (camIcon) camIcon.className = 'fas fa-video-slash';
         }
+        if (privateFlipCamBtn) {
+            privateFlipCamBtn.classList.add('hidden');
+        }
 
         const transceiver = getTransceiverByKind(peerConnection, 'video');
         if (transceiver) {
@@ -488,6 +528,47 @@ async function togglePrivateCamera() {
         socket.emit('private_camera_toggle', { isCameraOn: false });
         updatePrivateVideoStage();
         console.log('[1-on-1] Camera deactivated. Voice continues uninterrupted.');
+    }
+}
+
+async function togglePrivateFlipCamera() {
+    if (!peerConnection || !isPrivateCameraOn) return;
+    const nextMode = privateFacingMode === 'user' ? 'environment' : 'user';
+    const oldStream = privateLocalVideoStream;
+
+    try {
+        let newStream = null;
+        try {
+            newStream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: { exact: nextMode } }
+            });
+        } catch (errExact) {
+            try {
+                newStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: nextMode }
+                });
+            } catch (errFallback) {
+                newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            }
+        }
+
+        const newTrack = newStream.getVideoTracks()[0];
+        if (!newTrack) throw new Error('No replacement video track found');
+
+        const transceiver = getTransceiverByKind(peerConnection, 'video');
+        if (transceiver && transceiver.sender) {
+            await transceiver.sender.replaceTrack(newTrack);
+        }
+
+        if (oldStream) {
+            oldStream.getTracks().forEach(t => t.stop());
+        }
+
+        privateLocalVideoStream = newStream;
+        privateFacingMode = nextMode;
+        updatePrivateVideoStage();
+    } catch (err) {
+        console.warn('[1-on-1] Could not switch camera:', err);
     }
 }
 
@@ -520,6 +601,11 @@ function endSession() {
     privateRemoteVideoStream = null;
     isPrivateCameraOn = false;
     isPartnerCameraOn = false;
+    privateFacingMode = 'user';
+    closeGifDrawer();
+    if (privateFlipCamBtn) {
+        privateFlipCamBtn.classList.add('hidden');
+    }
     if (privateLocalVideo) {
         privateLocalVideo.classList.add('hidden');
         privateLocalVideo.srcObject = null;
@@ -971,6 +1057,13 @@ socket.on('message', (data) => {
     playSystemSound('message');
 });
 
+socket.on('private_gif', (data) => {
+    if (data && data.gifUrl) {
+        addPrivateGifMessage(data.gifUrl, 'received');
+        playSystemSound('message');
+    }
+});
+
 socket.on('typing', () => {
     let typingIndicator = document.getElementById('typing-indicator');
     if (!typingIndicator) {
@@ -1025,6 +1118,7 @@ let groupAudioStream = null;
 let groupVideoStream = null;
 let isGroupAudioMuted = false;
 let isLocalCameraOn = false;
+let groupFacingMode = 'user';
 let isPublicRoomMode = false;
 let currentGroupPin = null;
 let currentGroupName = null;
@@ -1090,6 +1184,7 @@ const localMicIndicator = document.getElementById('local-mic-indicator');
 const localCamIndicator = document.getElementById('local-cam-indicator');
 const groupMicBtn = document.getElementById('group-mic-btn');
 const groupCamBtn = document.getElementById('group-cam-btn');
+const groupFlipCamBtn = document.getElementById('group-flip-cam-btn');
 const groupOnlineCount = document.getElementById('group-online-count');
 
 // Live Stream & Chat Elements
@@ -1100,10 +1195,13 @@ const btnToggleGifDrawer = document.getElementById('btn-toggle-gif-drawer');
 const gifKeyboardDrawer = document.getElementById('gif-keyboard-drawer');
 const gifDrawerBackdrop = document.getElementById('gif-drawer-backdrop');
 const btnCloseGifDrawer = document.getElementById('btn-close-gif-drawer');
+const gifSearchForm = document.getElementById('gif-search-form');
 const gifSheetSearch = document.getElementById('gif-sheet-search');
 const btnClearGifSearch = document.getElementById('btn-clear-gif-search');
+const btnRunGifSearch = document.getElementById('btn-run-gif-search');
 const gifSheetGrid = document.getElementById('gif-sheet-grid');
 const gifTagsContainer = document.getElementById('gif-tags-container');
+let gifDrawerTarget = 'group';
 let myLocalFunnyAvatar = getRandomFunnyAvatar();
 
 // Stable Identity Map: memberId -> avatarUrl (prevents random avatar re-generation)
@@ -1326,6 +1424,13 @@ if (groupLobbyBtn) {
         if (panelCreateGroup) panelCreateGroup.classList.add('hidden');
         if (joinGroupError) joinGroupError.classList.add('hidden');
         if (createGroupError) createGroupError.classList.add('hidden');
+        try {
+            const savedName = localStorage.getItem('gc_last_display_name');
+            if (savedName) {
+                if (joinGroupUserInput && !joinGroupUserInput.value.trim()) joinGroupUserInput.value = savedName;
+                if (createGroupUserInput && !createGroupUserInput.value.trim()) createGroupUserInput.value = savedName;
+            }
+        } catch (e) {}
         showScreen('group-lobby-screen');
     });
 }
@@ -1363,11 +1468,16 @@ if (btnSubmitJoinGroup) {
 
 function handleJoinGroup() {
     const pin = joinGroupPassInput.value.trim();
-    const displayName = joinGroupUserInput.value.trim() || 'Friend';
+    const rawName = joinGroupUserInput.value.trim();
+    const displayName = rawName || 'Friend';
 
     if (!pin) {
         showFormError(joinGroupError, 'Please enter the 4-digit PIN.');
         return;
+    }
+
+    if (rawName) {
+        try { localStorage.setItem('gc_last_display_name', rawName); } catch (e) {}
     }
 
     joinGroupError.classList.add('hidden');
@@ -1396,11 +1506,16 @@ if (btnSubmitCreateGroup) {
 function handleCreateGroup() {
     const pin = createGroupPassInput.value.trim();
     const name = createGroupNameInput.value.trim();
-    const displayName = createGroupUserInput.value.trim() || 'Host';
+    const rawName = createGroupUserInput.value.trim();
+    const displayName = rawName || 'Host';
 
     if (!pin || pin.length < 3) {
         showFormError(createGroupError, 'Please enter a 4-digit PIN.');
         return;
+    }
+
+    if (rawName) {
+        try { localStorage.setItem('gc_last_display_name', rawName); } catch (e) {}
     }
 
     createGroupError.classList.add('hidden');
@@ -1555,6 +1670,10 @@ async function initGroupVoiceRoom(existingMembers, options = {}) {
     if (Array.isArray(existingMembers)) {
         for (const member of existingMembers) {
             groupMemberNames.set(member.memberId, member.displayName);
+            groupMemberMediaStates.set(member.memberId, {
+                isCameraOn: !!member.isCameraOn,
+                isAudioMuted: !!member.isAudioMuted
+            });
             const stableAvatar = getStableAvatarForUser(member.memberId, member.avatarUrl);
             createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, stableAvatar);
             const connPromise = createGroupPeerConnection(member.memberId, member.displayName, true, member.isCameraOn);
@@ -1563,22 +1682,11 @@ async function initGroupVoiceRoom(existingMembers, options = {}) {
             groupPendingConnections.delete(member.memberId);
 
             if (peer) {
-                if (member.isCameraOn) {
-                    peer.isCameraOn = true;
-                    const camBadge = document.getElementById(`cam-badge-${member.memberId}`);
-                    if (camBadge) {
-                        camBadge.className = 'media-badge cam-on';
-                        camBadge.innerHTML = '<i class="fas fa-video"></i>';
-                    }
-                }
-                if (member.isAudioMuted) {
-                    peer.isAudioMuted = true;
-                    const micBadge = document.getElementById(`mic-badge-${member.memberId}`);
-                    if (micBadge) {
-                        micBadge.className = 'media-badge mic-muted';
-                        micBadge.innerHTML = '<i class="fas fa-microphone-slash"></i>';
-                    }
-                }
+                const latestState = groupMemberMediaStates.get(member.memberId) || {
+                    isCameraOn: !!member.isCameraOn,
+                    isAudioMuted: !!member.isAudioMuted
+                };
+                applyGroupMediaStateToUi(member.memberId, latestState);
             }
         }
     }
@@ -1615,6 +1723,57 @@ async function renegotiateGroupPeer(peerId, peer) {
     }
 }
 
+// Bind active local audio/video tracks onto the RTCPeerConnection's matched transceivers
+async function syncLocalTracksToPeer(pc) {
+    if (!pc) return;
+    const localAudioTrack = (groupAudioStream && groupAudioStream.getAudioTracks()[0]) || null;
+    const localVideoTrack = (groupVideoStream && isLocalCameraOn && groupVideoStream.getVideoTracks()[0]) || null;
+
+    let audioTransceiver = getTransceiverByKind(pc, 'audio');
+    try {
+        if (localAudioTrack) {
+            if (audioTransceiver) {
+                audioTransceiver.direction = 'sendrecv';
+                await audioTransceiver.sender.replaceTrack(localAudioTrack);
+                if (typeof audioTransceiver.sender.setStreams === 'function' && groupAudioStream) {
+                    audioTransceiver.sender.setStreams(groupAudioStream);
+                }
+            } else {
+                pc.addTransceiver(localAudioTrack, { direction: 'sendrecv', streams: [groupAudioStream] });
+            }
+        } else if (audioTransceiver) {
+            audioTransceiver.direction = 'recvonly';
+            await audioTransceiver.sender.replaceTrack(null);
+        } else {
+            pc.addTransceiver('audio', { direction: 'recvonly' });
+        }
+    } catch (e) {
+        console.warn('[Group] sync audio transceiver note:', e);
+    }
+
+    let videoTransceiver = getTransceiverByKind(pc, 'video');
+    try {
+        if (localVideoTrack) {
+            if (videoTransceiver) {
+                videoTransceiver.direction = 'sendrecv';
+                await videoTransceiver.sender.replaceTrack(localVideoTrack);
+                if (typeof videoTransceiver.sender.setStreams === 'function' && groupVideoStream) {
+                    videoTransceiver.sender.setStreams(groupVideoStream);
+                }
+            } else {
+                pc.addTransceiver(localVideoTrack, { direction: 'sendrecv', streams: [groupVideoStream] });
+            }
+        } else if (videoTransceiver) {
+            videoTransceiver.direction = 'recvonly';
+            await videoTransceiver.sender.replaceTrack(null);
+        } else {
+            pc.addTransceiver('video', { direction: 'recvonly' });
+        }
+    } catch (e) {
+        console.warn('[Group] sync video transceiver note:', e);
+    }
+}
+
 // Create RTCPeerConnection for a specific remote peer in the group
 async function createGroupPeerConnection(targetMemberId, targetDisplayName, isInitiator, initialCameraOn = false) {
     if (groupPeers.has(targetMemberId)) {
@@ -1641,41 +1800,24 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
         document.body.appendChild(remoteAudioEl);
     }
 
+    const knownMedia = groupMemberMediaStates.get(targetMemberId) || {};
     const peerData = {
         pc: pc,
         memberId: targetMemberId,
         displayName: targetDisplayName,
         audioElement: remoteAudioEl,
         videoStream: null,
-        isCameraOn: !!initialCameraOn,
-        isAudioMuted: false,
+        isCameraOn: typeof knownMedia.isCameraOn === 'boolean' ? knownMedia.isCameraOn : !!initialCameraOn,
+        isAudioMuted: typeof knownMedia.isAudioMuted === 'boolean' ? knownMedia.isAudioMuted : false,
         needsRenegotiation: false
     };
 
     groupPeers.set(targetMemberId, peerData);
 
-    // Exactly ONE audio transceiver per connection (with track if active, else recvonly so listeners can hear!)
-    const localAudioTrack = (groupAudioStream && groupAudioStream.getAudioTracks()[0]) || null;
-    try {
-        if (localAudioTrack) {
-            pc.addTransceiver(localAudioTrack, { direction: 'sendrecv', streams: [groupAudioStream] });
-        } else {
-            pc.addTransceiver('audio', { direction: 'recvonly' });
-        }
-    } catch (e) {
-        console.warn('[Group] audio transceiver init note:', e);
-    }
-
-    // Exactly ONE video transceiver per connection (never duplicate transceivers!)
-    const localVideoTrack = (groupVideoStream && isLocalCameraOn && groupVideoStream.getVideoTracks()[0]) || null;
-    try {
-        if (localVideoTrack) {
-            pc.addTransceiver(localVideoTrack, { direction: 'sendrecv', streams: [groupVideoStream] });
-        } else {
-            pc.addTransceiver('video', { direction: 'recvonly' });
-        }
-    } catch (e) {
-        console.warn('[Group] video transceiver init note:', e);
+    // Only the Offerer adds transceivers upfront; the Answerer must receive the Offer via
+    // setRemoteDescription() first so local audio/video bind to the Offer's exact mid sections!
+    if (isInitiator) {
+        await syncLocalTracksToPeer(pc);
     }
 
     // ICE Candidate generation
@@ -1764,7 +1906,11 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
 
     pc.oniceconnectionstatechange = () => {
         console.log(`[Group] ICE State with ${targetMemberId}: ${pc.iceConnectionState}`);
-        if (pc.iceConnectionState === 'failed' && isInitiator && typeof pc.restartIce === 'function') {
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+            if (peerData.isCameraOn) {
+                applyGroupMediaStateToUi(targetMemberId, { isCameraOn: true });
+            }
+        } else if (pc.iceConnectionState === 'failed' && isInitiator && typeof pc.restartIce === 'function') {
             pc.restartIce();
             renegotiateGroupPeer(targetMemberId, peerData);
         }
@@ -1839,6 +1985,9 @@ socket.on('group_signal', async ({ from, data }) => {
             }
             groupQueuedCandidates.delete(from);
 
+            // Bind active local mic & camera tracks to the Offer-matched transceivers before creating Answer
+            await syncLocalTracksToPeer(pc);
+
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             socket.emit('group_signal', {
@@ -1888,16 +2037,14 @@ socket.on('group_signal', async ({ from, data }) => {
 socket.on('group_member_joined', async (member) => {
     console.log(`[Group] New member joined: ${member.displayName} (${member.memberId})`);
     groupMemberNames.set(member.memberId, member.displayName);
+    groupMemberMediaStates.set(member.memberId, {
+        isCameraOn: !!member.isCameraOn,
+        isAudioMuted: !!member.isAudioMuted
+    });
     if (typeof member.roomCount === 'number') serverRoomCount = member.roomCount;
     const stableAvatar = getStableAvatarForUser(member.memberId, member.avatarUrl);
     createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, stableAvatar);
-    if (member.isAudioMuted) {
-        const micBadge = document.getElementById(`mic-badge-${member.memberId}`);
-        if (micBadge) {
-            micBadge.className = 'media-badge mic-muted';
-            micBadge.innerHTML = '<i class="fas fa-microphone-slash"></i>';
-        }
-    }
+    applyGroupMediaStateToUi(member.memberId, groupMemberMediaStates.get(member.memberId));
     updateGroupOnlineCount();
     playSystemSound('connect');
 });
@@ -1912,35 +2059,48 @@ socket.on('group_member_left', ({ memberId, roomCount }) => {
     playSystemSound('disconnect');
 });
 
-// Media state change from a remote participant (mic muted, camera on/off)
-socket.on('group_media_state', ({ memberId, isAudioMuted, isCameraOn }) => {
-    const peer = groupPeers.get(memberId);
-    if (!peer) return;
+function applyGroupMediaStateToUi(memberId, state = {}) {
+    const prev = groupMemberMediaStates.get(memberId) || {};
+    const merged = {
+        isAudioMuted: typeof state.isAudioMuted === 'boolean' ? state.isAudioMuted : !!prev.isAudioMuted,
+        isCameraOn: typeof state.isCameraOn === 'boolean' ? state.isCameraOn : !!prev.isCameraOn
+    };
+    groupMemberMediaStates.set(memberId, merged);
 
-    if (typeof isAudioMuted === 'boolean') {
-        peer.isAudioMuted = isAudioMuted;
-        const micBadge = document.getElementById(`mic-badge-${memberId}`);
-        if (micBadge) {
-            micBadge.className = isAudioMuted ? 'media-badge mic-muted' : 'media-badge mic-on';
-            micBadge.innerHTML = isAudioMuted ? '<i class="fas fa-microphone-slash"></i>' : '<i class="fas fa-microphone"></i>';
+    const peer = groupPeers.get(memberId);
+    if (peer) {
+        if (typeof state.isAudioMuted === 'boolean') peer.isAudioMuted = state.isAudioMuted;
+        if (typeof state.isCameraOn === 'boolean') peer.isCameraOn = state.isCameraOn;
+        if (peer.isCameraOn && !peer.videoStream && peer.pc && typeof peer.pc.getReceivers === 'function') {
+            const videoReceiver = peer.pc.getReceivers().find(r => r.track && r.track.kind === 'video');
+            if (videoReceiver && videoReceiver.track) {
+                peer.videoStream = new MediaStream([videoReceiver.track]);
+            }
         }
     }
 
-    if (typeof isCameraOn === 'boolean') {
-        peer.isCameraOn = isCameraOn;
+    const micBadge = document.getElementById(`mic-badge-${memberId}`);
+    if (micBadge && typeof state.isAudioMuted === 'boolean') {
+        micBadge.className = state.isAudioMuted ? 'media-badge mic-muted' : 'media-badge mic-on';
+        micBadge.innerHTML = state.isAudioMuted ? '<i class="fas fa-microphone-slash"></i>' : '<i class="fas fa-microphone"></i>';
+    }
+
+    if (typeof state.isCameraOn === 'boolean') {
         const videoEl = document.getElementById(`video-${memberId}`);
         const avatarBox = document.getElementById(`avatar-box-${memberId}`);
         const camBadge = document.getElementById(`cam-badge-${memberId}`);
 
-        if (isCameraOn) {
+        if (state.isCameraOn) {
             if (videoEl) {
-                if (peer.videoStream) {
-                    videoEl.srcObject = peer.videoStream;
+                if (peer && peer.videoStream) {
+                    if (videoEl.srcObject !== peer.videoStream) {
+                        videoEl.srcObject = peer.videoStream;
+                    }
+                    videoEl.classList.remove('hidden');
+                    videoEl.play().catch(e => console.warn('Play video on state change:', e));
                 }
-                videoEl.classList.remove('hidden');
-                videoEl.play().catch(e => console.warn('Play video on state change:', e));
             }
-            if (avatarBox) avatarBox.classList.add('hidden');
+            if (avatarBox && peer && peer.videoStream) avatarBox.classList.add('hidden');
             if (camBadge) {
                 camBadge.className = 'media-badge cam-on';
                 camBadge.innerHTML = '<i class="fas fa-video"></i>';
@@ -1956,6 +2116,11 @@ socket.on('group_media_state', ({ memberId, isAudioMuted, isCameraOn }) => {
             }
         }
     }
+}
+
+// Media state change from a remote participant (mic muted, camera on/off)
+socket.on('group_media_state', ({ memberId, isAudioMuted, isCameraOn }) => {
+    applyGroupMediaStateToUi(memberId, { isAudioMuted, isCameraOn });
 });
 
 // Speaking indicator from a remote participant
@@ -1982,6 +2147,9 @@ socket.on('group_deleted', ({ message }) => {
 if (groupCamBtn) {
     groupCamBtn.addEventListener('click', toggleGroupCamera);
 }
+if (groupFlipCamBtn) {
+    groupFlipCamBtn.addEventListener('click', toggleGroupFlipCamera);
+}
 
 async function toggleGroupCamera() {
     if (!isLocalCameraOn) {
@@ -1990,7 +2158,7 @@ async function toggleGroupCamera() {
             console.log('[Camera] Requesting webcam video track...');
             try {
                 groupVideoStream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'user' }
+                    video: { facingMode: groupFacingMode }
                 });
             } catch (err1) {
                 console.warn('[Camera] Fallback to basic video constraint:', err1);
@@ -2002,8 +2170,10 @@ async function toggleGroupCamera() {
 
             // Local Preview
             localVideoPreview.srcObject = groupVideoStream;
+            localVideoPreview.style.transform = groupFacingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
             localVideoPreview.classList.remove('hidden');
             if (localAvatarBox) localAvatarBox.classList.add('hidden');
+            if (groupFlipCamBtn) groupFlipCamBtn.classList.remove('hidden');
 
             // Update Local UI
             groupCamBtn.className = 'live-circle-tool-btn cam-trigger cam-active';
@@ -2036,6 +2206,7 @@ async function toggleGroupCamera() {
         // TURN CAMERA OFF (Independent hardware release)
         console.log('[Camera] Turning camera OFF and releasing hardware...');
         isLocalCameraOn = false;
+        groupFacingMode = 'user';
 
         // 1. Stop all video tracks to immediately turn off webcam LED/hardware
         if (groupVideoStream) {
@@ -2050,6 +2221,7 @@ async function toggleGroupCamera() {
         localVideoPreview.classList.add('hidden');
         localVideoPreview.srcObject = null;
         if (localAvatarBox) localAvatarBox.classList.remove('hidden');
+        if (groupFlipCamBtn) groupFlipCamBtn.classList.add('hidden');
 
         // 3. Update Local UI
         groupCamBtn.className = 'live-circle-tool-btn cam-trigger cam-disabled';
@@ -2076,6 +2248,56 @@ async function toggleGroupCamera() {
         // 5. Inform other participants that video is disabled
         socket.emit('group_media_state', { isCameraOn: false });
         console.log('[Camera] Camera turned OFF. Voice continues uninterrupted.');
+    }
+}
+
+async function toggleGroupFlipCamera() {
+    if (!isLocalCameraOn) return;
+    const nextMode = groupFacingMode === 'user' ? 'environment' : 'user';
+    const oldStream = groupVideoStream;
+
+    try {
+        let newStream = null;
+        try {
+            newStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { exact: nextMode } }
+            });
+        } catch (errExact) {
+            try {
+                newStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: nextMode }
+                });
+            } catch (errFallback) {
+                newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            }
+        }
+
+        const newTrack = newStream.getVideoTracks()[0];
+        if (!newTrack) throw new Error('No replacement camera track');
+
+        for (const peer of groupPeers.values()) {
+            const pc = peer.pc;
+            if (!pc) continue;
+            const transceiver = getTransceiverByKind(pc, 'video');
+            if (transceiver && transceiver.sender) {
+                await transceiver.sender.replaceTrack(newTrack);
+            }
+        }
+
+        if (oldStream) {
+            oldStream.getVideoTracks().forEach(t => t.stop());
+        }
+
+        groupVideoStream = newStream;
+        groupFacingMode = nextMode;
+        if (localVideoPreview) {
+            localVideoPreview.srcObject = groupVideoStream;
+            localVideoPreview.style.transform = groupFacingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
+            localVideoPreview.classList.remove('hidden');
+            localVideoPreview.play().catch(() => {});
+        }
+    } catch (err) {
+        console.warn('[Camera] Flip camera failed:', err);
     }
 }
 
@@ -2247,6 +2469,9 @@ function createRemoteParticipantCard(memberId, displayName, isOwner, avatarUrl) 
             <div class="status-overlay">
                 <span id="speaking-pill-${memberId}" class="speaking-pill hidden">Speaking</span>
                 <div class="media-badges">
+                    <button type="button" class="spotlight-toggle-btn" title="Focus / Enlarge Video">
+                        <i class="fas fa-expand-alt"></i>
+                    </button>
                     <span id="mic-badge-${memberId}" class="media-badge mic-on" title="Microphone Active">
                         <i class="fas fa-microphone"></i>
                     </span>
@@ -2260,6 +2485,26 @@ function createRemoteParticipantCard(memberId, displayName, isOwner, avatarUrl) 
             <span class="participant-name">${escapeHtml(displayName)}${isOwner ? ' (Host)' : ''}</span>
         </div>
     `;
+
+    const spotBtn = card.querySelector('.spotlight-toggle-btn');
+    if (spotBtn) {
+        spotBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const wasSpotlight = card.classList.contains('is-spotlight');
+            if (groupParticipantsGrid) {
+                groupParticipantsGrid.querySelectorAll('.participant-card.is-spotlight').forEach(c => {
+                    c.classList.remove('is-spotlight');
+                    const icon = c.querySelector('.spotlight-toggle-btn i');
+                    if (icon) icon.className = 'fas fa-expand-alt';
+                });
+            }
+            if (!wasSpotlight) {
+                card.classList.add('is-spotlight');
+                const icon = spotBtn.querySelector('i');
+                if (icon) icon.className = 'fas fa-compress-alt';
+            }
+        });
+    }
 
     groupParticipantsGrid.appendChild(card);
     updateLiveGridLayout();
@@ -2283,6 +2528,7 @@ function removeRemoteParticipant(memberId) {
     groupPendingConnections.delete(memberId);
     groupQueuedCandidates.delete(memberId);
     groupMemberNames.delete(memberId);
+    groupMemberMediaStates.delete(memberId);
 
     const card = document.getElementById(`card-${memberId}`);
     if (card) {
@@ -2382,6 +2628,11 @@ function cleanupGroupMedia() {
         groupVideoStream = null;
     }
     isLocalCameraOn = false;
+    groupFacingMode = 'user';
+    closeGifDrawer();
+    if (groupFlipCamBtn) {
+        groupFlipCamBtn.classList.add('hidden');
+    }
     if (localVideoPreview) {
         localVideoPreview.classList.add('hidden');
         localVideoPreview.srcObject = null;
@@ -2435,6 +2686,7 @@ function cleanupGroupMedia() {
     groupPendingConnections.clear();
     groupQueuedCandidates.clear();
     groupMemberNames.clear();
+    groupMemberMediaStates.clear();
 
     // Remove all remote participant cards from DOM cleanly
     if (groupParticipantsGrid) {
@@ -2591,6 +2843,16 @@ function escapeHtml(str) {
 
 // 100% Verified Healthy Animated GIFs (Zero 404 or deleted-placeholder assets)
 const CURATED_GIFS = {
+    all: [
+        'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif',
+        'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif',
+        'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
+        'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif',
+        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif',
+        'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif',
+        'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif',
+        'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif'
+    ],
     trending: [
         'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif',
         'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif',
@@ -2598,6 +2860,12 @@ const CURATED_GIFS = {
         'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif',
         'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif',
         'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif'
+    ],
+    sports: [
+        'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
+        'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif',
+        'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif',
+        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif'
     ],
     laugh: [
         'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif',
@@ -2679,7 +2947,7 @@ const GIF_METADATA = [
     { url: 'https://media.giphy.com/media/L95W4wv8nnb9K/giphy.gif', tags: ['sad', 'pikachu', 'anime', 'cry', 'tears', 'cute'] }
 ];
 
-let currentGifCategory = 'trending';
+let currentGifCategory = 'all';
 let gifSearchDebounceTimer = null;
 
 if (liveChatForm) {
@@ -2742,12 +3010,14 @@ function appendLiveChatMessage(msg) {
 function closeGifDrawer() {
     if (gifKeyboardDrawer) gifKeyboardDrawer.classList.remove('is-open');
     if (btnToggleGifDrawer) btnToggleGifDrawer.classList.remove('active');
+    if (privateGifBtn) privateGifBtn.classList.remove('active');
     if (gifDrawerBackdrop) gifDrawerBackdrop.classList.add('hidden');
 }
 
 if (btnToggleGifDrawer) {
     btnToggleGifDrawer.addEventListener('click', () => {
         if (!gifKeyboardDrawer) return;
+        gifDrawerTarget = 'group';
         const isOpen = gifKeyboardDrawer.classList.toggle('is-open');
         btnToggleGifDrawer.classList.toggle('active', isOpen);
         if (gifDrawerBackdrop) gifDrawerBackdrop.classList.toggle('hidden', !isOpen);
@@ -2780,7 +3050,20 @@ if (gifTagsContainer) {
     });
 }
 
-// Instant keyword & tag search in GIF drawer with custom image URL support
+// Instant keyword & Web-wide GIF search (form submit + live input)
+if (gifSearchForm) {
+    gifSearchForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        clearTimeout(gifSearchDebounceTimer);
+        const query = gifSheetSearch ? gifSheetSearch.value.trim() : '';
+        if (query) {
+            searchGifs(query);
+        } else {
+            loadGifsForCategory(currentGifCategory);
+        }
+    });
+}
+
 if (gifSheetSearch) {
     gifSheetSearch.addEventListener('input', () => {
         const query = gifSheetSearch.value.trim();
@@ -2794,7 +3077,7 @@ if (gifSheetSearch) {
             } else {
                 loadGifsForCategory(currentGifCategory);
             }
-        }, 150);
+        }, 220);
     });
 }
 
@@ -2807,18 +3090,23 @@ if (btnClearGifSearch) {
 }
 
 function loadGifsForCategory(category) {
-    const baseGifs = CURATED_GIFS[category] || CURATED_GIFS.trending;
+    const baseGifs = CURATED_GIFS[category] || CURATED_GIFS.all;
     renderGifsInSheet(baseGifs);
 
-    // Enrich dynamically from live search so tabs always stay fresh
-    const catQuery = category === 'trending' ? 'funny reaction' : category;
+    // Enrich dynamically from ALL live GIF providers on the internet
+    const catQueryMap = {
+        all: 'trending reactions funny',
+        trending: 'trending funny meme',
+        sports: 'football goal celebration sports'
+    };
+    const catQuery = catQueryMap[category] || category;
     fetch(`/api/gifs/search?q=${encodeURIComponent(catQuery)}`)
         .then(r => r.ok ? r.json() : null)
         .then(data => {
             if (!data || !Array.isArray(data.results) || !gifSheetGrid) return;
             if (currentGifCategory !== category || (gifSheetSearch && gifSheetSearch.value.trim())) return;
             const seen = new Set(baseGifs);
-            const extras = data.results.filter(u => !seen.has(u)).slice(0, 10);
+            const extras = data.results.filter(u => !seen.has(u)).slice(0, 36);
             extras.forEach(url => {
                 const card = createGifCardElement(url);
                 gifSheetGrid.appendChild(card);
@@ -2921,7 +3209,13 @@ function renderGifsInSheet(gifUrls) {
 }
 
 function selectAndSendGif(gifUrl) {
-    socket.emit('group_chat_message', { gifUrl: gifUrl });
+    const isPrivateChatActive = gifDrawerTarget === 'private' || (chatScreen && chatScreen.classList.contains('active'));
+    if (isPrivateChatActive) {
+        socket.emit('private_gif', { gifUrl });
+        addPrivateGifMessage(gifUrl, 'sent');
+    } else {
+        socket.emit('group_chat_message', { gifUrl: gifUrl });
+    }
     closeGifDrawer();
 }
 

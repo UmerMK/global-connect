@@ -27,41 +27,97 @@ app.use((req, res, next) => {
 // Serve static files from the 'public' directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Real-time GIF search endpoint across the entire motion picture/GIF web
-app.get('/api/gifs/search', async (req, res) => {
-    const q = req.query.q;
-    if (!q || !q.trim()) {
-        return res.json({ success: true, results: [] });
-    }
+// Multi-provider real-time GIF search engine (Tenor + DuckDuckGo + Bing Animated GIFs)
+const UA_DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+async function fetchTenorGifs(queryTerm) {
     try {
-        const queryTerm = q.trim();
+        const slug = encodeURIComponent(queryTerm.toLowerCase().replace(/\s+/g, '-'));
+        const url = queryTerm === 'trending'
+            ? 'https://tenor.com/searches/trending-gifs'
+            : `https://tenor.com/search/${slug}-gifs`;
+        const res = await fetch(url, {
+            headers: { 'User-Agent': UA_DESKTOP },
+            signal: AbortSignal.timeout(4500)
+        });
+        if (!res.ok) return [];
+        const html = await res.text();
+        const matches = [...html.matchAll(/https:\/\/media\.tenor\.com\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\.gif/g)].map(m => m[0]);
+        return [...new Set(matches)].slice(0, 28);
+    } catch (e) {
+        return [];
+    }
+}
+
+async function fetchDdgGifs(queryTerm) {
+    try {
         const initialRes = await fetch(`https://duckduckgo.com/?q=${encodeURIComponent(queryTerm + ' gif')}`, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
+            headers: { 'User-Agent': UA_DESKTOP },
+            signal: AbortSignal.timeout(4500)
         });
         const html = await initialRes.text();
         const match = html.match(/vqd=['"]([\d-]+)['"]/) || html.match(/vqd=([\d-]+)[&'"]/);
-        if (!match) {
-            return res.json({ success: true, results: [] });
-        }
-
-        const vqd = match[1];
-        const apiRes = await fetch(`https://duckduckgo.com/i.js?q=${encodeURIComponent(queryTerm + ' gif')}&o=json&vqd=${vqd}&f=type:gif`, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': 'https://duckduckgo.com/'
-            }
+        if (!match) return [];
+        const apiRes = await fetch(`https://duckduckgo.com/i.js?q=${encodeURIComponent(queryTerm + ' gif')}&o=json&vqd=${match[1]}&f=type:gif`, {
+            headers: { 'User-Agent': UA_DESKTOP, 'Referer': 'https://duckduckgo.com/' },
+            signal: AbortSignal.timeout(4500)
         });
-
         const data = await apiRes.json();
-        const gifUrls = (data.results || [])
+        return (data.results || [])
             .map(r => r.image)
-            .filter(u => u && (u.includes('.gif') || u.includes('tenor') || u.includes('giphy')))
+            .filter(u => u && /^https?:\/\//i.test(u) && (u.includes('.gif') || u.includes('tenor') || u.includes('giphy')))
             .slice(0, 24);
+    } catch (e) {
+        return [];
+    }
+}
 
-        res.json({ success: true, results: gifUrls });
+async function fetchBingGifs(queryTerm) {
+    try {
+        const res = await fetch(`https://www.bing.com/images/async?q=${encodeURIComponent(queryTerm)}&qft=+filterui:photo-animatedgif&first=0&count=35`, {
+            headers: { 'User-Agent': UA_DESKTOP, 'Accept-Language': 'en-US,en;q=0.9' },
+            signal: AbortSignal.timeout(4500)
+        });
+        if (!res.ok) return [];
+        const html = await res.text();
+        const matches = [...html.matchAll(/murl(?:&quot;|"):\s*(?:&quot;|")(https?:\/\/[^"&]+)(?:&quot;|")/g)].map(m => m[1]);
+        return [...new Set(matches)]
+            .filter(u => u && !u.includes('bing.com') && (u.includes('.gif') || u.includes('tenor') || u.includes('giphy')))
+            .slice(0, 20);
+    } catch (e) {
+        return [];
+    }
+}
+
+app.get('/api/gifs/search', async (req, res) => {
+    const rawQ = (req.query.q || '').trim();
+    const queryTerm = (!rawQ || rawQ.toLowerCase() === 'all') ? 'trending reactions funny' : rawQ;
+
+    try {
+        const [tenorRes, ddgRes, bingRes] = await Promise.allSettled([
+            fetchTenorGifs(queryTerm),
+            fetchDdgGifs(queryTerm),
+            fetchBingGifs(queryTerm)
+        ]);
+
+        const seen = new Set();
+        const combined = [];
+        const addAll = (arr) => {
+            if (!Array.isArray(arr)) return;
+            for (const u of arr) {
+                if (!seen.has(u)) {
+                    seen.add(u);
+                    combined.push(u);
+                }
+            }
+        };
+
+        // Prioritize fast, reliable Tenor CDN + DDG + Bing animated GIFs
+        if (tenorRes.status === 'fulfilled') addAll(tenorRes.value);
+        if (ddgRes.status === 'fulfilled') addAll(ddgRes.value);
+        if (bingRes.status === 'fulfilled') addAll(bingRes.value);
+
+        res.json({ success: true, results: combined.slice(0, 48) });
     } catch (err) {
         console.warn('[GIF Search API error]:', err.message);
         res.json({ success: false, results: [] });
@@ -168,6 +224,12 @@ io.on('connection', (socket) => {
     socket.on('message', (msg) => {
         if (socket.roomId) {
             socket.to(socket.roomId).emit('message', { text: msg, sender: 'partner' });
+        }
+    });
+
+    socket.on('private_gif', ({ gifUrl }) => {
+        if (socket.roomId && gifUrl) {
+            socket.to(socket.roomId).emit('private_gif', { gifUrl: String(gifUrl).slice(0, 500) });
         }
     });
 

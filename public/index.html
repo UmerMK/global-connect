@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=5.1">
+    <link rel="stylesheet" href="style.css?v=6.0">
     <style>
         .visualizer-pair {
             display: flex;
@@ -228,6 +228,9 @@
                         </div>
                     </div>
                     <div class="call-controls">
+                        <button id="private-flip-cam-btn" class="icon-btn cam-toggle-btn hidden" title="Switch Front / Back Camera">
+                            <i class="fas fa-sync-alt"></i>
+                        </button>
                         <button id="private-cam-btn" class="icon-btn cam-toggle-btn" title="Toggle Video Camera">
                             <i class="fas fa-video-slash"></i>
                         </button>
@@ -283,6 +286,9 @@
                 </div>
 
                 <div class="input-bar">
+                    <button id="private-gif-btn" class="icon-btn private-gif-btn" title="Search & Send GIFs">
+                        <span class="gif-btn-text-xs">GIF</span>
+                    </button>
                     <input type="text" id="message-input" class="glass-input" placeholder="Type a message..."
                         autocomplete="off" maxlength="200">
                     <span id="char-counter" class="char-counter">0/200</span>
@@ -452,41 +458,6 @@
                             <i class="fas fa-sparkles"></i> Welcome to the live room! Tap the GIF button or chat below.
                         </div>
                     </div>
-
-                    <!-- Backdrop to tap outside GIF drawer -->
-                    <div id="gif-drawer-backdrop" class="gif-drawer-backdrop hidden"></div>
-
-                    <!-- Sliding Keyboard-Style GIF Drawer -->
-                    <div id="gif-keyboard-drawer" class="gif-keyboard-sheet">
-                        <div class="gif-sheet-handle-bar">
-                            <span class="gif-sheet-handle"></span>
-                        </div>
-                        <div class="gif-sheet-header">
-                            <div class="gif-search-wrapper">
-                                <i class="fas fa-search"></i>
-                                <input type="text" id="gif-sheet-search" placeholder="Search GIFs or paste URL..." autocomplete="off">
-                                <button id="btn-clear-gif-search" class="clear-icon-btn hidden"><i class="fas fa-times-circle"></i></button>
-                            </div>
-                            <button id="btn-close-gif-drawer" class="close-sheet-btn" title="Close"><i class="fas fa-chevron-down"></i></button>
-                        </div>
-                        <!-- Quick Tag Chips -->
-                        <div class="gif-tags-scroll" id="gif-tags-container">
-                            <button class="gif-tag-chip active" data-tag="trending">🔥 Trending</button>
-                            <button class="gif-tag-chip" data-tag="laugh">😂 Laugh</button>
-                            <button class="gif-tag-chip" data-tag="dance">💃 Dance</button>
-                            <button class="gif-tag-chip" data-tag="fire">🔥 Lit</button>
-                            <button class="gif-tag-chip" data-tag="love">❤️ Love</button>
-                            <button class="gif-tag-chip" data-tag="anime">🐱 Anime</button>
-                            <button class="gif-tag-chip" data-tag="meme">🎉 Memes</button>
-                            <button class="gif-tag-chip" data-tag="clap">👏 Clap</button>
-                            <button class="gif-tag-chip" data-tag="wow">🤯 Wow</button>
-                            <button class="gif-tag-chip" data-tag="sad">😭 Sad</button>
-                        </div>
-                        <!-- GIF Results Grid -->
-                        <div id="gif-sheet-grid" class="gif-keyboard-grid">
-                            <div class="gif-loading-state"><i class="fas fa-spinner fa-spin"></i> Loading GIFs...</div>
-                        </div>
-                    </div>
                 </div>
 
                 <!-- Bottom Floating Live Action Bar -->
@@ -498,7 +469,7 @@
                         </button>
                     </form>
 
-                    <button id="btn-toggle-gif-drawer" class="live-circle-tool-btn gif-trigger" title="Open GIF Keyboard">
+                    <button id="btn-toggle-gif-drawer" class="live-circle-tool-btn gif-trigger" title="Search ALL GIFs">
                         <span class="gif-btn-text">GIF</span>
                     </button>
 
@@ -510,6 +481,10 @@
                         <i class="fas fa-video-slash"></i>
                     </button>
 
+                    <button id="group-flip-cam-btn" class="live-circle-tool-btn flip-trigger hidden" title="Flip Front / Back Camera">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+
                     <button id="group-share-media-btn" class="live-circle-tool-btn upload-trigger" title="Share Photo or File">
                         <i class="fas fa-image"></i>
                     </button>
@@ -517,6 +492,42 @@
                     <button id="group-leave-control-btn" class="live-circle-tool-btn leave-trigger" title="Leave Live Room">
                         <i class="fas fa-phone-slash"></i>
                     </button>
+                </div>
+            </div>
+
+            <!-- Global All-Web GIF Search Drawer (Works in Public Live, Group Chat & 1-on-1 Chat) -->
+            <div id="gif-drawer-backdrop" class="gif-drawer-backdrop hidden"></div>
+            <div id="gif-keyboard-drawer" class="gif-keyboard-sheet">
+                <div class="gif-sheet-handle-bar">
+                    <span class="gif-sheet-handle"></span>
+                </div>
+                <div class="gif-sheet-header">
+                    <form id="gif-search-form" class="gif-search-wrapper" onsubmit="return false;">
+                        <i class="fas fa-search"></i>
+                        <input type="text" id="gif-sheet-search" placeholder="Search ALL GIFs (funny, messi, habibi, anime...)" autocomplete="off">
+                        <button type="button" id="btn-clear-gif-search" class="clear-icon-btn hidden"><i class="fas fa-times-circle"></i></button>
+                        <button type="submit" id="btn-run-gif-search" class="gif-search-submit-btn">Search</button>
+                    </form>
+                    <button id="btn-close-gif-drawer" class="close-sheet-btn" title="Close"><i class="fas fa-chevron-down"></i></button>
+                </div>
+                <!-- All-Web + Category Filter Chips -->
+                <div class="gif-tags-scroll" id="gif-tags-container">
+                    <button class="gif-tag-chip active" data-tag="all">🌐 All</button>
+                    <button class="gif-tag-chip" data-tag="trending">🔥 Trending</button>
+                    <button class="gif-tag-chip" data-tag="laugh">😂 Laugh</button>
+                    <button class="gif-tag-chip" data-tag="dance">💃 Dance</button>
+                    <button class="gif-tag-chip" data-tag="fire">🔥 Lit</button>
+                    <button class="gif-tag-chip" data-tag="love">❤️ Love</button>
+                    <button class="gif-tag-chip" data-tag="sports">⚽ Sports</button>
+                    <button class="gif-tag-chip" data-tag="anime">🐱 Anime</button>
+                    <button class="gif-tag-chip" data-tag="meme">🎉 Memes</button>
+                    <button class="gif-tag-chip" data-tag="clap">👏 Clap</button>
+                    <button class="gif-tag-chip" data-tag="wow">🤯 Wow</button>
+                    <button class="gif-tag-chip" data-tag="sad">😭 Sad</button>
+                </div>
+                <!-- GIF Results Grid -->
+                <div id="gif-sheet-grid" class="gif-keyboard-grid">
+                    <div class="gif-loading-state"><i class="fas fa-spinner fa-spin"></i> Loading GIFs...</div>
                 </div>
             </div>
         </main>
@@ -629,7 +640,7 @@
 
     <!-- Load Socket.IO client library -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="script.js?v=5.1"></script>
+    <script src="script.js?v=6.0"></script>
 </body>
 
 </html>
