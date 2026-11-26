@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=6.0">
+    <link rel="stylesheet" href="style.css?v=7.0">
     <style>
         .visualizer-pair {
             display: flex;
@@ -61,11 +61,15 @@
 
     <div class="container" id="main-container">
         <header id="app-header">
-            <h1>Global Connect</h1>
-            <p>Talk to anyone. No login. Stay private.</p>
+            <div class="brand-lockup">
+                <span class="brand-spark">⚡</span>
+                <h1>Global Connect</h1>
+                <span class="brand-live-tag">24/7</span>
+            </div>
+            <p>Drop in live. Zero logins. Pure vibes.</p>
         </header>
         <div id="topic-banner" class="topic-banner hidden">
-            <span class="topic-label">Today's Topic:</span>
+            <span class="topic-label">Icebreaker:</span>
             <span id="topic-text">Travel & Fun ✈️</span>
         </div>
 
@@ -76,12 +80,13 @@
                     <div class="globe-logo">
                         <i class="fas fa-globe-americas"></i>
                     </div>
-                    <h2 class="hero-title">Talk to People from Anywhere. Now.</h2>
-                    <p class="hero-sub">Practice English with strangers or voice & video with friends.<br>No profiles. Stay private.</p>
+                    <h2 class="hero-title">Hop On Live With Anyone, Anywhere.</h2>
+                    <p class="hero-sub">Instant 1-on-1 calls, open public rooms, or private 4-digit PIN hangouts with friends.</p>
 
                     <div class="hero-actions">
                         <button id="start-btn" class="primary-btn pulse">
-                            Start Talking Now <i class="fas fa-play"></i>
+                            <span class="cta-main"><i class="fas fa-bolt"></i> Start 1-on-1 Live</span>
+                            <span class="cta-chip">Random Match</span>
                         </button>
                         <button id="public-live-btn" class="primary-btn public-live-hero-btn">
                             <span class="public-btn-main">
@@ -90,7 +95,8 @@
                             <span id="public-live-badge" class="live-btn-count-pill">0 in Public Call</span>
                         </button>
                         <button id="group-lobby-btn" class="primary-btn group-hero-btn">
-                            <i class="fas fa-users"></i> Group Chat (Friends)
+                            <span class="cta-main"><i class="fas fa-users"></i> Friends Room</span>
+                            <span class="cta-chip">4-Digit PIN</span>
                         </button>
                         <button id="how-it-works-btn" class="secondary-btn">How it works</button>
                     </div>
@@ -183,21 +189,25 @@
                 <div class="chat-header">
                     <div class="chat-header-info">
                         <span class="status-dot online"></span>
-                        <span>Global Connect</span>
+                        <span class="brand-mini-title">Live 1-on-1</span>
                     </div>
                     <div class="chat-header-actions">
+                        <button id="private-toggle-chat-btn" class="live-chat-toggle-btn active" title="Hide / Show Messages">
+                            <i class="fas fa-comment-slash"></i>
+                            <span id="private-chat-unread" class="unread-badge hidden">0</span>
+                        </button>
                         <button id="report-btn" class="report-btn" title="Report this person">
-                            <i class="fas fa-flag"></i> Report
+                            <i class="fas fa-flag"></i> <span class="hide-xs">Report</span>
                         </button>
                         <button id="stop-btn" class="stop-btn" title="Stop live session">
-                            <i class="fas fa-stop"></i> Stop
+                            <i class="fas fa-stop"></i> <span class="hide-xs">Stop</span>
                         </button>
                         <button id="next-btn" class="secondary-btn">Next
                             <i class="fas fa-forward"></i></button>
                     </div>
                 </div>
 
-                <!-- Audio Call UI (Floating Glass Bar) -->
+                <!-- Audio / Video Call Status Pill Bar -->
                 <div id="call-ui" class="call-status-bar">
                     <div class="avatar-ring">
                         <img id="partner-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=Stranger"
@@ -228,7 +238,7 @@
                         </div>
                     </div>
                     <div class="call-controls">
-                        <button id="private-flip-cam-btn" class="icon-btn cam-toggle-btn hidden" title="Switch Front / Back Camera">
+                        <button id="private-flip-cam-btn" class="icon-btn cam-toggle-btn flip-trigger hidden" title="Switch Front / Back Camera">
                             <i class="fas fa-sync-alt"></i>
                         </button>
                         <button id="private-cam-btn" class="icon-btn cam-toggle-btn" title="Toggle Video Camera">
@@ -242,9 +252,9 @@
 
                 <!-- Flexible Stage Wrapper separating Video/Chat cleanly from Header and Input Bar -->
                 <div class="private-stage-wrapper" id="private-stage-wrapper">
-                    <!-- TikTok Live Style Dual Split-Screen Video Stage for 1-on-1 Private Chat -->
+                    <!-- Phone-First Full-Bleed Hero + Picture-in-Picture Video Stage for 1-on-1 Private Chat -->
                     <div id="private-video-stage" class="private-video-stage hidden">
-                        <!-- Partner / Remote Pane -->
+                        <!-- Partner / Remote Hero Stage -->
                         <div class="split-video-pane remote-pane" id="private-remote-pane">
                             <video id="private-remote-video" class="split-video-feed hidden" autoplay playsinline webkit-playsinline></video>
                             <div id="private-remote-placeholder" class="video-placeholder-view">
@@ -259,40 +269,39 @@
                             </div>
                         </div>
 
-                        <!-- User / Local Pane -->
-                        <div class="split-video-pane local-pane" id="private-local-pane">
+                        <!-- User / Local Picture-in-Picture (Tap to Swap View) -->
+                        <div class="split-video-pane local-pane" id="private-local-pane" title="Tap to swap camera views">
                             <video id="private-local-video" class="split-video-feed hidden" autoplay playsinline webkit-playsinline muted></video>
                             <div id="private-local-placeholder" class="video-placeholder-view">
                                 <div class="placeholder-avatar-ring">
                                     <img id="split-local-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=You" alt="You">
                                 </div>
                                 <span class="placeholder-label">You</span>
-                                <span class="placeholder-status"><i class="fas fa-video-slash"></i> Camera Off</span>
+                                <span class="placeholder-status"><i class="fas fa-video-slash"></i> Cam Off</span>
                             </div>
                             <div class="video-overlay-badge top-left">
-                                <i class="fas fa-user"></i> You
+                                <span>You</span>
                             </div>
-                        </div>
-
-                        <!-- Split Center Divider Badge -->
-                        <div class="split-center-divider">
-                            <span class="live-pill"><i class="fas fa-bolt"></i> LIVE</span>
+                            <span class="pip-swap-hint"><i class="fas fa-expand-alt"></i></span>
                         </div>
                     </div>
 
                     <div id="messages" class="messages-area">
                         <div class="system-msg">You are connected! Say hello.</div>
                     </div>
+
+                    <!-- Floating Preview Pill when new message/GIF arrives while messages are hidden -->
+                    <button type="button" id="private-toast-preview" class="private-toast-preview hidden"></button>
                 </div>
 
                 <div class="input-bar">
                     <button id="private-gif-btn" class="icon-btn private-gif-btn" title="Search & Send GIFs">
                         <span class="gif-btn-text-xs">GIF</span>
                     </button>
-                    <input type="text" id="message-input" class="glass-input" placeholder="Type a message..."
+                    <input type="text" id="message-input" class="glass-input" placeholder="Drop a message..."
                         autocomplete="off" maxlength="200">
                     <span id="char-counter" class="char-counter">0/200</span>
-                    <button id="send-btn" class="icon-btn send">
+                    <button id="send-btn" class="icon-btn send" title="Send">
                         <i class="fas fa-paper-plane"></i>
                     </button>
                 </div>
@@ -443,6 +452,9 @@
                                         </span>
                                     </div>
                                 </div>
+                                <button id="group-flip-cam-btn" class="live-circle-tool-btn flip-trigger local-flip-corner-btn hidden" title="Flip Front / Back Camera">
+                                    <i class="fas fa-sync-alt"></i>
+                                </button>
                             </div>
                             <div class="participant-meta">
                                 <span class="participant-name" id="local-display-name">You</span>
@@ -481,10 +493,6 @@
                         <i class="fas fa-video-slash"></i>
                     </button>
 
-                    <button id="group-flip-cam-btn" class="live-circle-tool-btn flip-trigger hidden" title="Flip Front / Back Camera">
-                        <i class="fas fa-sync-alt"></i>
-                    </button>
-
                     <button id="group-share-media-btn" class="live-circle-tool-btn upload-trigger" title="Share Photo or File">
                         <i class="fas fa-image"></i>
                     </button>
@@ -510,20 +518,15 @@
                     </form>
                     <button id="btn-close-gif-drawer" class="close-sheet-btn" title="Close"><i class="fas fa-chevron-down"></i></button>
                 </div>
-                <!-- All-Web + Category Filter Chips -->
+                <!-- Live Tenor Web Categories (Loaded Live from /api/gifs/categories) -->
                 <div class="gif-tags-scroll" id="gif-tags-container">
-                    <button class="gif-tag-chip active" data-tag="all">🌐 All</button>
-                    <button class="gif-tag-chip" data-tag="trending">🔥 Trending</button>
-                    <button class="gif-tag-chip" data-tag="laugh">😂 Laugh</button>
-                    <button class="gif-tag-chip" data-tag="dance">💃 Dance</button>
-                    <button class="gif-tag-chip" data-tag="fire">🔥 Lit</button>
-                    <button class="gif-tag-chip" data-tag="love">❤️ Love</button>
-                    <button class="gif-tag-chip" data-tag="sports">⚽ Sports</button>
-                    <button class="gif-tag-chip" data-tag="anime">🐱 Anime</button>
-                    <button class="gif-tag-chip" data-tag="meme">🎉 Memes</button>
-                    <button class="gif-tag-chip" data-tag="clap">👏 Clap</button>
-                    <button class="gif-tag-chip" data-tag="wow">🤯 Wow</button>
-                    <button class="gif-tag-chip" data-tag="sad">😭 Sad</button>
+                    <button class="gif-tag-chip active" data-tag="all" data-query="trending">🌐 All</button>
+                    <button class="gif-tag-chip" data-tag="trending" data-query="trending">🔥 Trending</button>
+                    <button class="gif-tag-chip" data-tag="memes" data-query="memes">🎭 Memes</button>
+                    <button class="gif-tag-chip" data-tag="sports" data-query="sports">⚽ Sports</button>
+                    <button class="gif-tag-chip" data-tag="music" data-query="music">🎵 Music</button>
+                    <button class="gif-tag-chip" data-tag="movies" data-query="movies">🎬 Movies</button>
+                    <button class="gif-tag-chip" data-tag="animals" data-query="animals">🐾 Animals</button>
                 </div>
                 <!-- GIF Results Grid -->
                 <div id="gif-sheet-grid" class="gif-keyboard-grid">
@@ -640,7 +643,7 @@
 
     <!-- Load Socket.IO client library -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="script.js?v=6.0"></script>
+    <script src="script.js?v=7.0"></script>
 </body>
 
 </html>

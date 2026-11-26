@@ -27,13 +27,126 @@ app.use((req, res, next) => {
 // Serve static files from the 'public' directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Multi-provider real-time GIF search engine (Tenor + DuckDuckGo + Bing Animated GIFs)
+// Multi-provider real-time GIF search engine + Live Tenor Categories
 const UA_DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+const TENOR_EMOJI_MAP = {
+    trending: '🔥', all: '🌐', memes: '🎭', sports: '⚽', music: '🎵',
+    movies: '🎬', tv: '📺', animals: '🐾', holidays: '🎉', gaming: '🎮',
+    anime: '⚡', love: '❤️', laugh: '😂', clapping: '👏', awesome: '🤩',
+    wow: '🤯', sad: '😭', why: '🤔', 'thumbs-up': '👍', 'high-five': '🙌',
+    oops: '😬', ouch: '😣', dancing: '💃', kiss: '😘', nervous: '😅',
+    aww: '🥹', confused: '😵', sigh: '😮‍💨', bored: '🥱', scared: '😱'
+};
+
+const FALLBACK_CATEGORIES = [
+    { tag: 'all', query: 'trending', label: '🌐 All' },
+    { tag: 'trending', query: 'trending', label: '🔥 Trending' },
+    { tag: 'memes', query: 'memes', label: '🎭 Memes' },
+    { tag: 'reactions', query: 'reactions', label: '⚡ Reactions' },
+    { tag: 'funny', query: 'funny', label: '😂 Funny' },
+    { tag: 'sports', query: 'sports', label: '⚽ Sports' },
+    { tag: 'music', query: 'music', label: '🎵 Music' },
+    { tag: 'movies', query: 'movies', label: '🎬 Movies' },
+    { tag: 'animals', query: 'animals', label: '🐾 Animals' },
+    { tag: 'tv', query: 'tv', label: '📺 TV Shows' },
+    { tag: 'clapping', query: 'clapping', label: '👏 Clapping' },
+    { tag: 'wow', query: 'wow', label: '🤯 Wow' },
+    { tag: 'love', query: 'love', label: '❤️ Love' },
+    { tag: 'sad', query: 'sad', label: '😭 Sad' }
+];
+
+let cachedGifCategories = null;
+let cachedGifCategoriesAt = 0;
+const GIF_CATS_TTL_MS = 30 * 60 * 1000;
+
+async function fetchLiveTenorCategories() {
+    if (cachedGifCategories && Date.now() - cachedGifCategoriesAt < GIF_CATS_TTL_MS) {
+        return cachedGifCategories;
+    }
+
+    const extractTenorLinks = async (pageUrl) => {
+        try {
+            const r = await fetch(pageUrl, {
+                headers: { 'User-Agent': UA_DESKTOP, 'Accept-Language': 'en-US,en;q=0.9' },
+                signal: AbortSignal.timeout(4500)
+            });
+            if (!r.ok) return [];
+            const html = await r.text();
+            const results = [];
+            for (const m of html.matchAll(/href="\/search\/([a-z0-9-]+)-gifs"[^>]*>([\s\S]{0,300}?)<\/a>/gi)) {
+                const slug = m[1].toLowerCase();
+                const rawLabel = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replace(/^#/, '').trim();
+                if (!slug || slug.includes('tenor') || slug.length < 2) continue;
+                results.push({ slug, rawLabel });
+            }
+            return results;
+        } catch {
+            return [];
+        }
+    };
+
+    try {
+        const [exploreRes, reactionsRes] = await Promise.allSettled([
+            extractTenorLinks('https://tenor.com/explore'),
+            extractTenorLinks('https://tenor.com/reactions')
+        ]);
+
+        const seen = new Set(['all', 'trending']);
+        const cats = [
+            { tag: 'all', query: 'trending', label: '🌐 All' },
+            { tag: 'trending', query: 'trending', label: '🔥 Trending' }
+        ];
+
+        const pushCat = (slug, rawLabel) => {
+            if (seen.has(slug) || cats.length >= 20) return;
+            seen.add(slug);
+            const cleanWords = (rawLabel && rawLabel.length <= 24)
+                ? rawLabel
+                : slug.replace(/-/g, ' ');
+            const title = cleanWords.replace(/\b\w/g, c => c.toUpperCase());
+            const emoji = TENOR_EMOJI_MAP[slug] || '✨';
+            cats.push({
+                tag: slug,
+                query: slug.replace(/-/g, ' '),
+                label: `${emoji} ${title}`
+            });
+        };
+
+        if (exploreRes.status === 'fulfilled') {
+            const priorityOrder = ['memes', 'sports', 'music', 'animals', 'movies', 'tv', 'holidays'];
+            const sortedExplore = [...exploreRes.value].sort((a, b) => {
+                const ia = priorityOrder.indexOf(a.slug);
+                const ib = priorityOrder.indexOf(b.slug);
+                return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+            });
+            // Put top everyday social categories first, mix in top Tenor Reactions right after Memes/Sports/Music
+            for (const item of sortedExplore.slice(0, 4)) pushCat(item.slug, item.rawLabel);
+            if (reactionsRes.status === 'fulfilled') {
+                for (const rItem of reactionsRes.value.slice(0, 6)) pushCat(rItem.slug, rItem.rawLabel);
+            }
+            for (const item of sortedExplore.slice(4)) pushCat(item.slug, item.rawLabel);
+        }
+        if (reactionsRes.status === 'fulfilled') {
+            for (const item of reactionsRes.value.slice(0, 14)) pushCat(item.slug, item.rawLabel);
+        }
+
+        if (cats.length > 4) {
+            cachedGifCategories = cats;
+            cachedGifCategoriesAt = Date.now();
+            return cats;
+        }
+    } catch (e) {
+        console.warn('[GIF Categories] Live fetch fallback:', e.message);
+    }
+    return FALLBACK_CATEGORIES;
+}
 
 async function fetchTenorGifs(queryTerm) {
     try {
-        const slug = encodeURIComponent(queryTerm.toLowerCase().replace(/\s+/g, '-'));
-        const url = queryTerm === 'trending'
+        const lower = queryTerm.toLowerCase().trim();
+        const slug = encodeURIComponent(lower.replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-'));
+        const url = (!slug || lower === 'trending' || lower === 'all')
             ? 'https://tenor.com/searches/trending-gifs'
             : `https://tenor.com/search/${slug}-gifs`;
         const res = await fetch(url, {
@@ -43,7 +156,7 @@ async function fetchTenorGifs(queryTerm) {
         if (!res.ok) return [];
         const html = await res.text();
         const matches = [...html.matchAll(/https:\/\/media\.tenor\.com\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\.gif/g)].map(m => m[0]);
-        return [...new Set(matches)].slice(0, 28);
+        return [...new Set(matches)].slice(0, 32);
     } catch (e) {
         return [];
     }
@@ -72,9 +185,9 @@ async function fetchDdgGifs(queryTerm) {
     }
 }
 
-async function fetchBingGifs(queryTerm) {
+async function fetchBingGifs(queryTerm, firstOffset = 0) {
     try {
-        const res = await fetch(`https://www.bing.com/images/async?q=${encodeURIComponent(queryTerm)}&qft=+filterui:photo-animatedgif&first=0&count=35`, {
+        const res = await fetch(`https://www.bing.com/images/async?q=${encodeURIComponent(queryTerm)}&qft=+filterui:photo-animatedgif&first=${firstOffset}&count=35`, {
             headers: { 'User-Agent': UA_DESKTOP, 'Accept-Language': 'en-US,en;q=0.9' },
             signal: AbortSignal.timeout(4500)
         });
@@ -83,41 +196,48 @@ async function fetchBingGifs(queryTerm) {
         const matches = [...html.matchAll(/murl(?:&quot;|"):\s*(?:&quot;|")(https?:\/\/[^"&]+)(?:&quot;|")/g)].map(m => m[1]);
         return [...new Set(matches)]
             .filter(u => u && !u.includes('bing.com') && (u.includes('.gif') || u.includes('tenor') || u.includes('giphy')))
-            .slice(0, 20);
+            .slice(0, 24);
     } catch (e) {
         return [];
     }
 }
 
+app.get('/api/gifs/categories', async (req, res) => {
+    const categories = await fetchLiveTenorCategories();
+    res.json({ success: true, categories });
+});
+
 app.get('/api/gifs/search', async (req, res) => {
     const rawQ = (req.query.q || '').trim();
-    const queryTerm = (!rawQ || rawQ.toLowerCase() === 'all') ? 'trending reactions funny' : rawQ;
+    const page = Math.max(0, parseInt(req.query.page, 10) || 0);
+    const isAllOrTrending = !rawQ || rawQ.toLowerCase() === 'all' || rawQ.toLowerCase() === 'trending';
+    const queryTerm = isAllOrTrending ? 'trending' : rawQ;
+    const secondaryTerm = isAllOrTrending ? 'trending memes reactions' : rawQ;
+    const bingOffset = page * 35;
 
     try {
-        const [tenorRes, ddgRes, bingRes] = await Promise.allSettled([
-            fetchTenorGifs(queryTerm),
-            fetchDdgGifs(queryTerm),
-            fetchBingGifs(queryTerm)
-        ]);
+        const pageVariants = page % 2 === 1
+            ? [`${secondaryTerm} reaction`, `${secondaryTerm} meme`]
+            : [`${secondaryTerm} celebration`, `${secondaryTerm} funny`];
+        const tasks = page === 0
+            ? [fetchTenorGifs(queryTerm), fetchDdgGifs(secondaryTerm), fetchBingGifs(secondaryTerm, 0)]
+            : [fetchTenorGifs(pageVariants[0]), fetchTenorGifs(pageVariants[1]), fetchBingGifs(secondaryTerm, bingOffset)];
 
+        const resultsList = await Promise.allSettled(tasks);
         const seen = new Set();
         const combined = [];
-        const addAll = (arr) => {
-            if (!Array.isArray(arr)) return;
-            for (const u of arr) {
-                if (!seen.has(u)) {
-                    seen.add(u);
-                    combined.push(u);
+        for (const r of resultsList) {
+            if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+                for (const u of r.value) {
+                    if (!seen.has(u)) {
+                        seen.add(u);
+                        combined.push(u);
+                    }
                 }
             }
-        };
+        }
 
-        // Prioritize fast, reliable Tenor CDN + DDG + Bing animated GIFs
-        if (tenorRes.status === 'fulfilled') addAll(tenorRes.value);
-        if (ddgRes.status === 'fulfilled') addAll(ddgRes.value);
-        if (bingRes.status === 'fulfilled') addAll(bingRes.value);
-
-        res.json({ success: true, results: combined.slice(0, 48) });
+        res.json({ success: true, page, results: combined.slice(0, 48) });
     } catch (err) {
         console.warn('[GIF Search API error]:', err.message);
         res.json({ success: false, results: [] });

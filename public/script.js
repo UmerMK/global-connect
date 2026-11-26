@@ -36,7 +36,12 @@ const userCountDisplay = document.getElementById('user-count');
 const privateCamBtn = document.getElementById('private-cam-btn');
 const privateFlipCamBtn = document.getElementById('private-flip-cam-btn');
 const privateGifBtn = document.getElementById('private-gif-btn');
+const privateToggleChatBtn = document.getElementById('private-toggle-chat-btn');
+const privateChatUnreadBadge = document.getElementById('private-chat-unread');
+const privateToastPreview = document.getElementById('private-toast-preview');
 const privateVideoStage = document.getElementById('private-video-stage');
+const privateRemotePane = document.getElementById('private-remote-pane');
+const privateLocalPane = document.getElementById('private-local-pane');
 const privateRemoteVideo = document.getElementById('private-remote-video');
 const privateLocalVideo = document.getElementById('private-local-video');
 let privateLocalVideoStream = null;
@@ -44,6 +49,27 @@ let privateRemoteVideoStream = null;
 let isPrivateCameraOn = false;
 let isPartnerCameraOn = false;
 let privateFacingMode = 'user';
+let isPrivateChatHidden = false;
+let privateUnreadCount = 0;
+let privateToastTimer = null;
+let needsPrivateRenegotiation = false;
+
+async function renegotiatePrivatePeer() {
+    if (!peerConnection) return;
+    if (peerConnection.signalingState !== 'stable') {
+        needsPrivateRenegotiation = true;
+        return;
+    }
+    try {
+        needsPrivateRenegotiation = false;
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        socket.emit('signal', { offer });
+        console.log('[1-on-1] Renegotiation offer sent to partner');
+    } catch (renegErr) {
+        console.warn('[1-on-1] Renegotiation offer error:', renegErr);
+    }
+}
 const groupMemberNames = new Map();
 const groupMemberMediaStates = new Map();
 
@@ -251,6 +277,49 @@ function setRandomTopic() {
 // Auto-rotate topic every 7 minutes
 setInterval(setRandomTopic, 420000);
 
+function updatePrivateUnreadUi() {
+    if (privateChatUnreadBadge) {
+        if (privateUnreadCount > 0 && isPrivateChatHidden) {
+            privateChatUnreadBadge.innerText = privateUnreadCount > 99 ? '99+' : String(privateUnreadCount);
+            privateChatUnreadBadge.classList.remove('hidden');
+        } else {
+            privateChatUnreadBadge.classList.add('hidden');
+        }
+    }
+}
+
+function showPrivateToast(previewText) {
+    if (!privateToastPreview || !isPrivateChatHidden) return;
+    privateToastPreview.innerText = previewText;
+    privateToastPreview.classList.remove('hidden');
+    clearTimeout(privateToastTimer);
+    privateToastTimer = setTimeout(() => {
+        if (privateToastPreview) privateToastPreview.classList.add('hidden');
+    }, 3600);
+}
+
+function togglePrivateChatVisibility(forceOpen) {
+    isPrivateChatHidden = forceOpen === true ? false : !isPrivateChatHidden;
+    if (messagesContainer) {
+        messagesContainer.classList.toggle('chat-hidden', isPrivateChatHidden);
+    }
+    if (privateToggleChatBtn) {
+        privateToggleChatBtn.classList.toggle('active', !isPrivateChatHidden);
+        const icon = privateToggleChatBtn.querySelector('i');
+        if (icon) {
+            icon.className = isPrivateChatHidden ? 'fas fa-comment-dots' : 'fas fa-comment-slash';
+        }
+        privateToggleChatBtn.title = isPrivateChatHidden ? 'Show Messages' : 'Hide Messages';
+    }
+    if (!isPrivateChatHidden) {
+        privateUnreadCount = 0;
+        clearTimeout(privateToastTimer);
+        if (privateToastPreview) privateToastPreview.classList.add('hidden');
+        if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+    updatePrivateUnreadUi();
+}
+
 function addMessage(text, type) {
     const div = document.createElement('div');
     if (type === 'system') {
@@ -262,6 +331,12 @@ function addMessage(text, type) {
     }
     messagesContainer.appendChild(div);
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+    if (type === 'received' && isPrivateChatHidden) {
+        privateUnreadCount++;
+        updatePrivateUnreadUi();
+        showPrivateToast(`Partner: ${text}`);
+    }
 }
 
 function addPrivateGifMessage(gifUrl, type) {
@@ -276,6 +351,12 @@ function addPrivateGifMessage(gifUrl, type) {
     div.appendChild(img);
     messagesContainer.appendChild(div);
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+    if (type === 'received' && isPrivateChatHidden) {
+        privateUnreadCount++;
+        updatePrivateUnreadUi();
+        showPrivateToast('Partner sent a GIF');
+    }
 }
 
 // Event Listeners
@@ -346,6 +427,30 @@ if (privateCamBtn) {
 if (privateFlipCamBtn) {
     privateFlipCamBtn.addEventListener('click', togglePrivateFlipCamera);
 }
+if (privateToggleChatBtn) {
+    privateToggleChatBtn.addEventListener('click', () => {
+        togglePrivateChatVisibility();
+    });
+}
+if (privateToastPreview) {
+    privateToastPreview.addEventListener('click', () => {
+        togglePrivateChatVisibility(true);
+    });
+}
+if (privateLocalPane) {
+    privateLocalPane.addEventListener('click', (e) => {
+        if (!privateVideoStage || privateVideoStage.classList.contains('swapped-pip')) return;
+        e.stopPropagation();
+        privateVideoStage.classList.toggle('swapped-pip');
+    });
+}
+if (privateRemotePane) {
+    privateRemotePane.addEventListener('click', (e) => {
+        if (!privateVideoStage || !privateVideoStage.classList.contains('swapped-pip')) return;
+        e.stopPropagation();
+        privateVideoStage.classList.toggle('swapped-pip');
+    });
+}
 if (privateGifBtn) {
     privateGifBtn.addEventListener('click', () => {
         if (!gifKeyboardDrawer) return;
@@ -353,8 +458,11 @@ if (privateGifBtn) {
         const isOpen = gifKeyboardDrawer.classList.toggle('is-open');
         privateGifBtn.classList.toggle('active', isOpen);
         if (gifDrawerBackdrop) gifDrawerBackdrop.classList.toggle('hidden', !isOpen);
-        if (isOpen && (!gifSheetGrid.children.length || gifSheetGrid.querySelector('.gif-loading-state'))) {
-            loadGifsForCategory(currentGifCategory);
+        if (isOpen) {
+            loadLiveGifCategories();
+            if (!gifSheetGrid.children.length || gifSheetGrid.querySelector('.gif-loading-state')) {
+                loadGifsForCategory(currentGifCategory, currentGifQuery);
+            }
         }
     });
 }
@@ -378,9 +486,13 @@ function updatePrivateVideoStage() {
     const localPlaceholder = document.getElementById('private-local-placeholder');
     const partnerAvatarImg = document.getElementById('split-partner-avatar');
     const partnerAvatarMain = document.getElementById('partner-avatar');
+    const localAvatarImgSplit = document.getElementById('split-local-avatar');
 
     if (partnerAvatarImg && partnerAvatarMain && partnerAvatarMain.src) {
         partnerAvatarImg.src = partnerAvatarMain.src;
+    }
+    if (localAvatarImgSplit && myLocalFunnyAvatar) {
+        localAvatarImgSplit.src = myLocalFunnyAvatar;
     }
 
     const isAnyVideoActive = isPrivateCameraOn || isPartnerCameraOn;
@@ -389,6 +501,15 @@ function updatePrivateVideoStage() {
         if (chatScreenEl) chatScreenEl.classList.add('video-active');
         if (topicBanner) topicBanner.classList.add('hidden');
         privateVideoStage.classList.remove('hidden');
+
+        // Hide empty local cam-off box whenever partner's cam is streaming so it never blocks their face
+        const hideSoloLocal = isPartnerCameraOn && !isPrivateCameraOn;
+        if (privateLocalPane) {
+            privateLocalPane.classList.toggle('hidden-when-solo-remote', hideSoloLocal);
+        }
+        if (hideSoloLocal) {
+            privateVideoStage.classList.remove('swapped-pip');
+        }
 
         // Local Split Pane
         if (isPrivateCameraOn && privateLocalVideoStream) {
@@ -431,6 +552,12 @@ function updatePrivateVideoStage() {
 }
 
 async function togglePrivateCamera() {
+    if (!peerConnection && (isInitializing || currentRoomId)) {
+        const waitStart = Date.now();
+        while (!peerConnection && Date.now() - waitStart < 6000) {
+            await new Promise(r => setTimeout(r, 100));
+        }
+    }
     if (!peerConnection) {
         alert('Please wait until connected to a partner before starting video.');
         return;
@@ -471,15 +598,8 @@ async function togglePrivateCamera() {
                 });
             }
 
-            // Renegotiate with partner so their browser decodes the new video track
-            try {
-                const offer = await peerConnection.createOffer();
-                await peerConnection.setLocalDescription(offer);
-                socket.emit('signal', { offer });
-                console.log('[1-on-1] Renegotiation offer sent to partner');
-            } catch (renegErr) {
-                console.warn('[1-on-1] Renegotiation offer error:', renegErr);
-            }
+            // Renegotiate with partner (queued cleanly if initial offer/answer is still settling)
+            await renegotiatePrivatePeer();
 
             socket.emit('private_camera_toggle', { isCameraOn: true });
             updatePrivateVideoStage();
@@ -516,14 +636,7 @@ async function togglePrivateCamera() {
             } catch (e) {}
         }
 
-        try {
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            socket.emit('signal', { offer });
-            console.log('[1-on-1] Renegotiation (camera off) offer sent');
-        } catch (renegErr) {
-            console.warn('[1-on-1] Camera off renegotiation error:', renegErr);
-        }
+        await renegotiatePrivatePeer();
 
         socket.emit('private_camera_toggle', { isCameraOn: false });
         updatePrivateVideoStage();
@@ -575,6 +688,12 @@ async function togglePrivateFlipCamera() {
 socket.on('private_camera_toggle', ({ isCameraOn }) => {
     console.log('[1-on-1] Partner camera status:', isCameraOn);
     isPartnerCameraOn = !!isCameraOn;
+    if (isPartnerCameraOn && !privateRemoteVideoStream && peerConnection && typeof peerConnection.getReceivers === 'function') {
+        const videoReceiver = peerConnection.getReceivers().find(r => r.track && r.track.kind === 'video');
+        if (videoReceiver && videoReceiver.track) {
+            privateRemoteVideoStream = new MediaStream([videoReceiver.track]);
+        }
+    }
     updatePrivateVideoStage();
 });
 
@@ -582,6 +701,9 @@ function endSession() {
     console.log('Ending session and cleaning up resources...');
     stopTimer();
     stopVisualizers(); // Renamed from stopVisualizer
+    signalQueue = [];
+    isInitializing = false;
+    needsPrivateRenegotiation = false;
     if (peerConnection) {
         peerConnection.onicecandidate = null;
         peerConnection.ontrack = null;
@@ -602,9 +724,24 @@ function endSession() {
     isPrivateCameraOn = false;
     isPartnerCameraOn = false;
     privateFacingMode = 'user';
+    isPrivateChatHidden = false;
+    privateUnreadCount = 0;
+    clearTimeout(privateToastTimer);
+    if (messagesContainer) messagesContainer.classList.remove('chat-hidden');
+    if (privateToastPreview) privateToastPreview.classList.add('hidden');
+    if (privateToggleChatBtn) {
+        privateToggleChatBtn.classList.add('active');
+        const msgIcon = privateToggleChatBtn.querySelector('i');
+        if (msgIcon) msgIcon.className = 'fas fa-comment-slash';
+        privateToggleChatBtn.title = 'Hide Messages';
+    }
+    updatePrivateUnreadUi();
     closeGifDrawer();
     if (privateFlipCamBtn) {
         privateFlipCamBtn.classList.add('hidden');
+    }
+    if (privateVideoStage) {
+        privateVideoStage.classList.remove('swapped-pip');
     }
     if (privateLocalVideo) {
         privateLocalVideo.classList.add('hidden');
@@ -871,6 +1008,9 @@ async function initWebRTC(isCaller) {
                 callStatus.innerText = 'Finding person...';
             } else if (state === 'connected' || state === 'completed') {
                 callStatus.innerText = 'Connected - Speaking';
+                if (isPartnerCameraOn && privateRemoteVideoStream) {
+                    updatePrivateVideoStage();
+                }
             } else if (state === 'failed' || state === 'disconnected') {
                 callStatus.innerText = 'Connection Failed';
                 addMessage('Connection failed. Retrying with backup server...', 'system');
@@ -1030,12 +1170,18 @@ async function handleSignal(data) {
         await peerConnection.setLocalDescription(answer);
         console.log('Sending answer...');
         socket.emit('signal', { answer });
+        if (needsPrivateRenegotiation && peerConnection.signalingState === 'stable') {
+            await renegotiatePrivatePeer();
+        }
     } else if (data.answer) {
         console.log('Setting remote description (answer)...');
         await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
         while (signalQueue.length > 0 && signalQueue[0].candidate) {
             const c = signalQueue.shift();
             try { await peerConnection.addIceCandidate(new RTCIceCandidate(c.candidate)); } catch (e) {}
+        }
+        if (needsPrivateRenegotiation && peerConnection.signalingState === 'stable') {
+            await renegotiatePrivatePeer();
         }
     } else if (data.candidate) {
         console.log("ICE [Remote Candidate Received]:", data.candidate.candidate);
@@ -3014,6 +3160,35 @@ function closeGifDrawer() {
     if (gifDrawerBackdrop) gifDrawerBackdrop.classList.add('hidden');
 }
 
+let currentGifQuery = 'trending';
+let liveCategoriesLoaded = false;
+const gifCategoryCache = new Map();
+let activeGifPaginationQuery = 'trending';
+let activeGifPage = 0;
+
+async function loadLiveGifCategories() {
+    if (liveCategoriesLoaded || !gifTagsContainer) return;
+    try {
+        const res = await fetch('/api/gifs/categories');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data || !Array.isArray(data.categories) || data.categories.length === 0) return;
+
+        liveCategoriesLoaded = true;
+        gifTagsContainer.innerHTML = '';
+        data.categories.forEach((cat) => {
+            const btn = document.createElement('button');
+            btn.className = 'gif-tag-chip' + (cat.tag === currentGifCategory ? ' active' : '');
+            btn.setAttribute('data-tag', cat.tag);
+            btn.setAttribute('data-query', cat.query || cat.tag);
+            btn.innerText = cat.label;
+            gifTagsContainer.appendChild(btn);
+        });
+    } catch (e) {
+        console.warn('[GIF Categories] Live load skipped:', e);
+    }
+}
+
 if (btnToggleGifDrawer) {
     btnToggleGifDrawer.addEventListener('click', () => {
         if (!gifKeyboardDrawer) return;
@@ -3021,8 +3196,11 @@ if (btnToggleGifDrawer) {
         const isOpen = gifKeyboardDrawer.classList.toggle('is-open');
         btnToggleGifDrawer.classList.toggle('active', isOpen);
         if (gifDrawerBackdrop) gifDrawerBackdrop.classList.toggle('hidden', !isOpen);
-        if (isOpen && (!gifSheetGrid.children.length || gifSheetGrid.querySelector('.gif-loading-state'))) {
-            loadGifsForCategory(currentGifCategory);
+        if (isOpen) {
+            loadLiveGifCategories();
+            if (!gifSheetGrid.children.length || gifSheetGrid.querySelector('.gif-loading-state')) {
+                loadGifsForCategory(currentGifCategory, currentGifQuery);
+            }
         }
     });
 }
@@ -3035,18 +3213,23 @@ if (gifDrawerBackdrop) {
     gifDrawerBackdrop.addEventListener('click', closeGifDrawer);
 }
 
-// Category tag chips
+// Category tag chips (live from Tenor Explore + Reactions)
 if (gifTagsContainer) {
     gifTagsContainer.addEventListener('click', (e) => {
         const chip = e.target.closest('.gif-tag-chip');
         if (!chip) return;
         gifTagsContainer.querySelectorAll('.gif-tag-chip').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
-        const tag = chip.getAttribute('data-tag');
+        if (typeof chip.scrollIntoView === 'function') {
+            chip.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+        }
+        const tag = chip.getAttribute('data-tag') || 'all';
+        const query = chip.getAttribute('data-query') || tag;
         currentGifCategory = tag;
+        currentGifQuery = query;
         if (gifSheetSearch) gifSheetSearch.value = '';
         if (btnClearGifSearch) btnClearGifSearch.classList.add('hidden');
-        loadGifsForCategory(tag);
+        loadGifsForCategory(tag, query);
     });
 }
 
@@ -3059,7 +3242,7 @@ if (gifSearchForm) {
         if (query) {
             searchGifs(query);
         } else {
-            loadGifsForCategory(currentGifCategory);
+            loadGifsForCategory(currentGifCategory, currentGifQuery);
         }
     });
 }
@@ -3075,7 +3258,7 @@ if (gifSheetSearch) {
             if (query) {
                 searchGifs(query);
             } else {
-                loadGifsForCategory(currentGifCategory);
+                loadGifsForCategory(currentGifCategory, currentGifQuery);
             }
         }, 220);
     });
@@ -3085,41 +3268,47 @@ if (btnClearGifSearch) {
     btnClearGifSearch.addEventListener('click', () => {
         if (gifSheetSearch) gifSheetSearch.value = '';
         btnClearGifSearch.classList.add('hidden');
-        loadGifsForCategory(currentGifCategory);
+        loadGifsForCategory(currentGifCategory, currentGifQuery);
     });
 }
 
-function loadGifsForCategory(category) {
-    const baseGifs = CURATED_GIFS[category] || CURATED_GIFS.all;
-    renderGifsInSheet(baseGifs);
+async function loadGifsForCategory(category, queryOverride) {
+    if (!gifSheetGrid) return;
+    const rawQuery = queryOverride || (category === 'all' ? 'trending' : category);
+    activeGifPaginationQuery = rawQuery;
+    activeGifPage = 0;
 
-    // Enrich dynamically from ALL live GIF providers on the internet
-    const catQueryMap = {
-        all: 'trending reactions funny',
-        trending: 'trending funny meme',
-        sports: 'football goal celebration sports'
-    };
-    const catQuery = catQueryMap[category] || category;
-    fetch(`/api/gifs/search?q=${encodeURIComponent(catQuery)}`)
-        .then(r => r.ok ? r.json() : null)
-        .then(data => {
-            if (!data || !Array.isArray(data.results) || !gifSheetGrid) return;
+    if (gifCategoryCache.has(rawQuery)) {
+        renderGifsInSheet(gifCategoryCache.get(rawQuery), true);
+        return;
+    }
+
+    gifSheetGrid.innerHTML = '<div class="gif-loading-state"><i class="fas fa-spinner fa-spin"></i> Loading GIFs from web...</div>';
+
+    try {
+        const res = await fetch(`/api/gifs/search?q=${encodeURIComponent(rawQuery)}&page=0`);
+        if (res.ok) {
+            const data = await res.json();
             if (currentGifCategory !== category || (gifSheetSearch && gifSheetSearch.value.trim())) return;
-            const seen = new Set(baseGifs);
-            const extras = data.results.filter(u => !seen.has(u)).slice(0, 36);
-            extras.forEach(url => {
-                const card = createGifCardElement(url);
-                gifSheetGrid.appendChild(card);
-            });
-        })
-        .catch(() => {});
+            if (data && Array.isArray(data.results) && data.results.length > 0) {
+                gifCategoryCache.set(rawQuery, data.results);
+                renderGifsInSheet(data.results, true);
+                return;
+            }
+        }
+    } catch (e) {
+        console.warn('[GIF Category] Live fetch failed, using offline fallback:', e);
+    }
+
+    if (currentGifCategory !== category || (gifSheetSearch && gifSheetSearch.value.trim())) return;
+    renderGifsInSheet(CURATED_GIFS[category] || CURATED_GIFS.trending, false);
 }
 
 async function searchGifs(query) {
     if (!gifSheetGrid) return;
     const cleanQuery = query.toLowerCase().trim();
     if (!cleanQuery) {
-        loadGifsForCategory(currentGifCategory);
+        loadGifsForCategory(currentGifCategory, currentGifQuery);
         return;
     }
 
@@ -3142,40 +3331,71 @@ async function searchGifs(query) {
         return;
     }
 
-    gifSheetGrid.innerHTML = '<div class="gif-loading-state"><i class="fas fa-spinner fa-spin"></i> Searching GIFs...</div>';
+    activeGifPaginationQuery = cleanQuery;
+    activeGifPage = 0;
+    gifSheetGrid.innerHTML = '<div class="gif-loading-state"><i class="fas fa-spinner fa-spin"></i> Searching ALL GIFs...</div>';
 
-    // 1. Live Internet-Wide GIF search (DuckDuckGo real-time GIF search engine)
+    // 1. Live Internet-Wide GIF search (Tenor + Bing + DuckDuckGo)
     try {
-        const res = await fetch(`/api/gifs/search?q=${encodeURIComponent(cleanQuery)}`);
+        const res = await fetch(`/api/gifs/search?q=${encodeURIComponent(cleanQuery)}&page=0`);
         if (res.ok) {
             const data = await res.json();
             if (data.results && data.results.length > 0) {
-                renderGifsInSheet(data.results);
+                renderGifsInSheet(data.results, true);
                 return;
             }
         }
     } catch (e) {
-        console.warn('Live GIF search fetch error, falling back to curated library:', e);
+        console.warn('Live GIF search fetch error, falling back to offline library:', e);
     }
 
-    // 2. Fallback to rich local keyword & tag search across curated GIFs
+    // 2. Offline-only fallback
     const matched = GIF_METADATA.filter(item => {
         return item.tags.some(t => t.includes(cleanQuery) || cleanQuery.includes(t));
     }).map(i => i.url);
 
     if (matched.length > 0) {
-        renderGifsInSheet(matched);
+        renderGifsInSheet(matched, false);
     } else {
         const words = cleanQuery.split(/\s+/);
         const partialMatches = GIF_METADATA.filter(item => {
             return words.some(w => item.tags.some(t => t.startsWith(w) || t.includes(w)));
         }).map(i => i.url);
+        renderGifsInSheet(partialMatches.length > 0 ? partialMatches : CURATED_GIFS.trending, false);
+    }
+}
 
-        if (partialMatches.length > 0) {
-            renderGifsInSheet(partialMatches);
-        } else {
-            renderGifsInSheet(CURATED_GIFS.trending);
+async function loadMoreGifs(btnEl) {
+    if (!gifSheetGrid || !activeGifPaginationQuery) return;
+    activeGifPage++;
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.innerText = 'Loading more...';
+    }
+    try {
+        const res = await fetch(`/api/gifs/search?q=${encodeURIComponent(activeGifPaginationQuery)}&page=${activeGifPage}`);
+        if (res.ok) {
+            const data = await res.json();
+            const existingUrls = new Set([...gifSheetGrid.querySelectorAll('img')].map(i => i.src));
+            const fresh = (data.results || []).filter(u => !existingUrls.has(u));
+            const loadWrap = gifSheetGrid.querySelector('.gif-load-more-wrap');
+            fresh.forEach(url => {
+                const card = createGifCardElement(url);
+                if (loadWrap) gifSheetGrid.insertBefore(card, loadWrap);
+                else gifSheetGrid.appendChild(card);
+            });
+            if (fresh.length === 0 && loadWrap) {
+                loadWrap.remove();
+            } else if (btnEl) {
+                btnEl.disabled = false;
+                btnEl.innerText = 'Load More GIFs';
+            }
+            return;
         }
+    } catch (e) {}
+    if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.innerText = 'Load More GIFs';
     }
 }
 
@@ -3185,7 +3405,7 @@ function createGifCardElement(url) {
     const img = document.createElement('img');
     img.src = url;
     img.alt = 'GIF';
-    img.loading = 'lazy';
+    img.decoding = 'async';
     img.onerror = () => card.remove();
     card.appendChild(img);
     card.addEventListener('click', () => {
@@ -3194,7 +3414,7 @@ function createGifCardElement(url) {
     return card;
 }
 
-function renderGifsInSheet(gifUrls) {
+function renderGifsInSheet(gifUrls, allowLoadMore = false) {
     if (!gifSheetGrid) return;
     gifSheetGrid.innerHTML = '';
 
@@ -3206,6 +3426,19 @@ function renderGifsInSheet(gifUrls) {
     gifUrls.forEach(url => {
         gifSheetGrid.appendChild(createGifCardElement(url));
     });
+
+    if (allowLoadMore) {
+        const wrap = document.createElement('div');
+        wrap.className = 'gif-load-more-wrap';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.id = 'btn-load-more-gifs';
+        btn.className = 'gif-load-more-btn';
+        btn.innerText = 'Load More GIFs';
+        btn.addEventListener('click', () => loadMoreGifs(btn));
+        wrap.appendChild(btn);
+        gifSheetGrid.appendChild(wrap);
+    }
 }
 
 function selectAndSendGif(gifUrl) {
