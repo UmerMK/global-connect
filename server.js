@@ -76,10 +76,28 @@ const broadcastOnlineCount = () => {
     io.emit('online_count', onlineCount);
 };
 
-const broadcastPublicLiveCount = () => {
+const getPublicLiveStatus = () => {
     const publicRoom = io.sockets.adapter.rooms.get(`group_${PUBLIC_LIVE_PIN}`);
-    const count = publicRoom ? publicRoom.size : 0;
-    io.emit('public_live_count', count);
+    let count = 0;
+    let cameraCount = 0;
+    let talkingCount = 0;
+    if (publicRoom) {
+        for (const sId of publicRoom) {
+            const s = io.sockets.sockets.get(sId);
+            if (s && s.groupPin === PUBLIC_LIVE_PIN) {
+                count++;
+                if (s.isCameraOn) cameraCount++;
+                if (!s.isAudioMuted) talkingCount++;
+            }
+        }
+    }
+    return { count, cameraCount, talkingCount };
+};
+
+const broadcastPublicLiveCount = () => {
+    const status = getPublicLiveStatus();
+    io.emit('public_live_count', status.count);
+    io.emit('public_live_status', status);
 };
 
 // Helper to safely remove a socket from a group and notify peers
@@ -88,8 +106,10 @@ function handleLeaveGroup(socket) {
     const pin = socket.groupPin;
     const socketRoom = `group_${pin}`;
     socket.leave(socketRoom);
-    socket.to(socketRoom).emit('group_member_left', { memberId: socket.id });
-    console.log(`[Group] Member ${socket.id} left room PIN ${pin}`);
+    const remainingRoom = io.sockets.adapter.rooms.get(socketRoom);
+    const roomCount = remainingRoom ? remainingRoom.size : 0;
+    socket.to(socketRoom).emit('group_member_left', { memberId: socket.id, roomCount });
+    console.log(`[Group] Member ${socket.id} left room PIN ${pin} (remaining: ${roomCount})`);
     socket.groupPin = null;
     socket.groupName = null;
     socket.memberId = null;
@@ -107,8 +127,9 @@ io.on('connection', (socket) => {
     onlineCount++;
     console.log(`User ${socket.id} connected. Total online: ${onlineCount}`);
     broadcastOnlineCount();
-    const initPublicRoom = io.sockets.adapter.rooms.get(`group_${PUBLIC_LIVE_PIN}`);
-    socket.emit('public_live_count', initPublicRoom ? initPublicRoom.size : 0);
+    const initPublicStatus = getPublicLiveStatus();
+    socket.emit('public_live_count', initPublicStatus.count);
+    socket.emit('public_live_status', initPublicStatus);
 
     // ==========================================
     // 1. RANDOM VOICE / PRIVATE CHAT (PRESERVED)
@@ -278,7 +299,8 @@ io.on('connection', (socket) => {
                 memberId: memberId,
                 displayName: cleanName,
                 avatarUrl: cleanAvatar,
-                existingMembers: existingMembers
+                existingMembers: existingMembers,
+                roomCount: existingMembers.length + 1
             });
         }
 
@@ -288,7 +310,8 @@ io.on('connection', (socket) => {
             avatarUrl: cleanAvatar,
             isOwner: false,
             isCameraOn: false,
-            isAudioMuted: !!isAudioMuted
+            isAudioMuted: !!isAudioMuted,
+            roomCount: existingMembers.length + 1
         });
 
         broadcastPublicLiveCount();
@@ -375,7 +398,8 @@ io.on('connection', (socket) => {
                 memberId: memberId,
                 displayName: cleanName,
                 avatarUrl: cleanAvatar,
-                existingMembers: existingMembers
+                existingMembers: existingMembers,
+                roomCount: existingMembers.length + 1
             });
         }
 
@@ -386,7 +410,8 @@ io.on('connection', (socket) => {
             avatarUrl: cleanAvatar,
             isOwner: isOwner,
             isCameraOn: false,
-            isAudioMuted: false
+            isAudioMuted: false,
+            roomCount: existingMembers.length + 1
         });
     });
 
@@ -414,6 +439,10 @@ io.on('connection', (socket) => {
             isAudioMuted: socket.isAudioMuted,
             isCameraOn: socket.isCameraOn
         });
+
+        if (socket.groupPin === PUBLIC_LIVE_PIN) {
+            broadcastPublicLiveCount();
+        }
     });
 
     // Speaking activity indicator

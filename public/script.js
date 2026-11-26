@@ -43,6 +43,15 @@ let isPrivateCameraOn = false;
 let isPartnerCameraOn = false;
 const groupMemberNames = new Map();
 
+// Helper to cleanly find the exact transceiver for audio or video without crossing media types
+function getTransceiverByKind(pc, kind) {
+    if (!pc || typeof pc.getTransceivers !== 'function') return null;
+    return pc.getTransceivers().find(t =>
+        (t.receiver && t.receiver.track && t.receiver.track.kind === kind) ||
+        (t.sender && t.sender.track && t.sender.track.kind === kind)
+    ) || null;
+}
+
 // Wildly Unpredictable & Funny Auto-Generated Avatar Generator
 function getRandomFunnyAvatar() {
     const collections = [
@@ -215,7 +224,10 @@ function showScreen(screenId) {
         else if (appHeader) appHeader.classList.remove('hidden');
     } else {
         if (mainContainer) mainContainer.classList.remove('wide-mode');
-        if (appHeader) appHeader.classList.remove('hidden');
+        if (appHeader) {
+            if (screenId === 'chat-screen') appHeader.classList.add('hidden');
+            else appHeader.classList.remove('hidden');
+        }
     }
 
     if (screenId === 'chat-screen') {
@@ -313,10 +325,20 @@ muteBtn.addEventListener('click', toggleMute);
 if (privateCamBtn) {
     privateCamBtn.addEventListener('click', togglePrivateCamera);
 }
+if (chatScreen) {
+    chatScreen.addEventListener('click', () => {
+        if (remoteAudio && remoteAudio.paused && remoteAudio.srcObject) {
+            remoteAudio.play().catch(() => {});
+        }
+        if (audioContext && audioContext.state === 'suspended') {
+            audioContext.resume().catch(() => {});
+        }
+    }, { passive: true });
+}
 
 function updatePrivateVideoStage() {
     if (!privateVideoStage) return;
-    const chatScreen = document.getElementById('chat-screen');
+    const chatScreenEl = document.getElementById('chat-screen');
     const remoteVideo = document.getElementById('private-remote-video');
     const remotePlaceholder = document.getElementById('private-remote-placeholder');
     const localVideo = document.getElementById('private-local-video');
@@ -331,7 +353,8 @@ function updatePrivateVideoStage() {
     const isAnyVideoActive = isPrivateCameraOn || isPartnerCameraOn;
 
     if (isAnyVideoActive) {
-        if (chatScreen) chatScreen.classList.add('video-active');
+        if (chatScreenEl) chatScreenEl.classList.add('video-active');
+        if (topicBanner) topicBanner.classList.add('hidden');
         privateVideoStage.classList.remove('hidden');
 
         // Local Split Pane
@@ -365,7 +388,10 @@ function updatePrivateVideoStage() {
             if (remotePlaceholder) remotePlaceholder.classList.remove('hidden');
         }
     } else {
-        if (chatScreen) chatScreen.classList.remove('video-active');
+        if (chatScreenEl) chatScreenEl.classList.remove('video-active');
+        if (topicBanner && chatScreenEl && chatScreenEl.classList.contains('active')) {
+            topicBanner.classList.remove('hidden');
+        }
         privateVideoStage.classList.add('hidden');
     }
 }
@@ -395,22 +421,17 @@ async function togglePrivateCamera() {
                 if (camIcon) camIcon.className = 'fas fa-video';
             }
 
-            // Attach video track to 1-on-1 RTCPeerConnection and elevate transceiver to sendrecv
+            // Attach video track cleanly to 1-on-1 RTCPeerConnection
             const videoTrack = privateLocalVideoStream.getVideoTracks()[0];
-            const transceiver = peerConnection.getTransceivers().find(t => 
-                (t.sender && t.sender.track && t.sender.track.kind === 'video') ||
-                (t.receiver && t.receiver.track && t.receiver.track.kind === 'video')
-            );
+            const transceiver = getTransceiverByKind(peerConnection, 'video');
             if (transceiver) {
                 transceiver.direction = 'sendrecv';
-            }
-
-            const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video') ||
-                           peerConnection.getSenders().find(s => !s.track);
-            if (sender) {
-                await sender.replaceTrack(videoTrack);
+                await transceiver.sender.replaceTrack(videoTrack);
             } else {
-                peerConnection.addTrack(videoTrack, privateLocalVideoStream);
+                peerConnection.addTransceiver(videoTrack, {
+                    direction: 'sendrecv',
+                    streams: [privateLocalVideoStream]
+                });
             }
 
             // Renegotiate with partner so their browser decodes the new video track
@@ -447,18 +468,11 @@ async function togglePrivateCamera() {
             if (camIcon) camIcon.className = 'fas fa-video-slash';
         }
 
-        const transceiver = peerConnection.getTransceivers().find(t => 
-            (t.sender && t.sender.track && t.sender.track.kind === 'video') ||
-            (t.receiver && t.receiver.track && t.receiver.track.kind === 'video')
-        );
+        const transceiver = getTransceiverByKind(peerConnection, 'video');
         if (transceiver) {
             transceiver.direction = 'recvonly';
-        }
-
-        const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-        if (sender) {
             try {
-                await sender.replaceTrack(null);
+                await transceiver.sender.replaceTrack(null);
             } catch (e) {}
         }
 
@@ -806,10 +820,14 @@ async function initWebRTC(isCaller) {
             } else if (event.track.kind === 'video') {
                 const stream = event.streams[0] || new MediaStream([event.track]);
                 privateRemoteVideoStream = stream;
-                isPartnerCameraOn = true;
                 if (privateRemoteVideo) {
                     privateRemoteVideo.srcObject = stream;
-                    privateRemoteVideo.play().catch(e => console.warn("Remote video play failed:", e));
+                }
+                if (!event.track.muted || isPartnerCameraOn) {
+                    isPartnerCameraOn = true;
+                    if (privateRemoteVideo) {
+                        privateRemoteVideo.play().catch(e => console.warn("Remote video play failed:", e));
+                    }
                 }
                 updatePrivateVideoStage();
 
@@ -822,6 +840,13 @@ async function initWebRTC(isCaller) {
                         privateRemoteVideo.play().catch(e => {});
                     }
                     updatePrivateVideoStage();
+                };
+
+                event.track.onmute = () => {
+                    console.log('[1-on-1] Partner video track muted');
+                    if (!isPartnerCameraOn) {
+                        updatePrivateVideoStage();
+                    }
                 };
 
                 event.track.onended = () => {
@@ -905,8 +930,15 @@ socket.on('signal', async (data) => {
 async function handleSignal(data) {
     console.log('Handling signal:', Object.keys(data));
     if (data.offer) {
+        if (peerConnection.signalingState === 'have-local-offer') {
+            await peerConnection.setLocalDescription({ type: 'rollback' });
+        }
         console.log('Setting remote description (offer)...');
         await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+        while (signalQueue.length > 0 && signalQueue[0].candidate) {
+            const c = signalQueue.shift();
+            try { await peerConnection.addIceCandidate(new RTCIceCandidate(c.candidate)); } catch (e) {}
+        }
         console.log('Creating answer...');
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
@@ -915,6 +947,10 @@ async function handleSignal(data) {
     } else if (data.answer) {
         console.log('Setting remote description (answer)...');
         await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+        while (signalQueue.length > 0 && signalQueue[0].candidate) {
+            const c = signalQueue.shift();
+            try { await peerConnection.addIceCandidate(new RTCIceCandidate(c.candidate)); } catch (e) {}
+        }
     } else if (data.candidate) {
         console.log("ICE [Remote Candidate Received]:", data.candidate.candidate);
         if (peerConnection && peerConnection.remoteDescription) {
@@ -1006,6 +1042,19 @@ const publicLiveBadge = document.getElementById('public-live-badge');
 const groupLobbyBtn = document.getElementById('group-lobby-btn');
 const roomPinChip = document.getElementById('room-pin-chip');
 const btnCopyLiveLink = document.getElementById('btn-copy-live-link');
+const groupOnlineText = document.getElementById('group-online-text');
+const btnToggleLiveChat = document.getElementById('btn-toggle-live-chat');
+const publicPreviewModal = document.getElementById('public-preview-modal');
+const closePublicPreviewBtn = document.getElementById('close-public-preview-btn');
+const previewLiveCountNum = document.getElementById('preview-live-count-num');
+const previewLiveCountRing = document.getElementById('preview-live-count-ring');
+const previewLiveHeadline = document.getElementById('preview-live-headline');
+const previewLiveSubtext = document.getElementById('preview-live-subtext');
+const previewCamCount = document.getElementById('preview-cam-count');
+const previewMicCount = document.getElementById('preview-mic-count');
+const btnPublicEnterVoice = document.getElementById('btn-public-enter-voice');
+const btnPublicEnterVideo = document.getElementById('btn-public-enter-video');
+const btnPublicEnterListen = document.getElementById('btn-public-enter-listen');
 const groupBackHomeBtn = document.getElementById('group-back-home-btn');
 const panelCreateGroup = document.getElementById('panel-create-group');
 const panelJoinGroup = document.getElementById('panel-join-group');
@@ -1093,21 +1142,89 @@ const closeMediaPopupBtn = document.getElementById('close-media-popup-btn');
 // ==========================================
 // 1. NAVIGATION & SWITCHING (PUBLIC LIVE & PIN JOIN)
 // ==========================================
-let lastPublicLiveCount = 0;
+let latestPublicStatus = { count: 0, cameraCount: 0, talkingCount: 0 };
+let serverRoomCount = null;
+let isLiveChatHidden = false;
 
-function renderPublicLiveBadge(count) {
-    lastPublicLiveCount = count;
+function renderPublicLiveStatus(status) {
+    latestPublicStatus = status || { count: 0, cameraCount: 0, talkingCount: 0 };
+    const { count, cameraCount, talkingCount } = latestPublicStatus;
+
     const badge = document.getElementById('public-live-badge');
-    if (!badge) return;
-    badge.innerText = count > 0 ? `${count} Live` : 'Open';
+    if (badge) {
+        if (count > 0) {
+            badge.classList.add('is-live');
+            badge.innerText = count === 1
+                ? `1 person in Public Call${cameraCount ? ' • Cam On' : ''}`
+                : `${count} people in Public Call${cameraCount ? ` • ${cameraCount} Cam` : ''}`;
+        } else {
+            badge.classList.remove('is-live');
+            badge.innerText = '0 in Public Call • Tap to Start';
+        }
+    }
+
+    // Also update Pre-Join Public Live Modal live in real-time
+    if (previewLiveCountNum) previewLiveCountNum.innerText = String(count);
+    if (previewLiveCountRing) previewLiveCountRing.classList.toggle('has-people', count > 0);
+    if (previewLiveHeadline) {
+        previewLiveHeadline.innerText = count === 0
+            ? 'Public Video Call Is Empty'
+            : count === 1
+                ? '1 Person Is in Public Video Call'
+                : `${count} People Are in Public Video Call`;
+    }
+    if (previewLiveSubtext) {
+        previewLiveSubtext.innerText = count === 0
+            ? 'Be the first to start Live! Others who open this site can join immediately.'
+            : 'No password or username needed. Pick how you want to join below:';
+    }
+    if (previewCamCount) previewCamCount.innerText = String(cameraCount || 0);
+    if (previewMicCount) previewMicCount.innerText = String(talkingCount || 0);
 }
 
-socket.on('public_live_count', (count) => {
-    renderPublicLiveBadge(count);
+socket.on('public_live_status', (status) => {
+    renderPublicLiveStatus(status);
 });
 
+socket.on('public_live_count', (count) => {
+    renderPublicLiveStatus({ ...latestPublicStatus, count });
+});
+
+function openPublicPreviewModal() {
+    renderPublicLiveStatus(latestPublicStatus);
+    if (publicPreviewModal) {
+        publicPreviewModal.classList.remove('hidden');
+    } else {
+        handleJoinPublicLive('voice');
+    }
+}
+
+function closePublicPreviewModal() {
+    if (publicPreviewModal) publicPreviewModal.classList.add('hidden');
+}
+
 if (publicLiveBtn) {
-    publicLiveBtn.addEventListener('click', handleJoinPublicLive);
+    publicLiveBtn.addEventListener('click', openPublicPreviewModal);
+}
+if (closePublicPreviewBtn) {
+    closePublicPreviewBtn.addEventListener('click', closePublicPreviewModal);
+}
+if (btnPublicEnterVoice) {
+    btnPublicEnterVoice.addEventListener('click', () => handleJoinPublicLive('voice'));
+}
+if (btnPublicEnterVideo) {
+    btnPublicEnterVideo.addEventListener('click', () => handleJoinPublicLive('video'));
+}
+if (btnPublicEnterListen) {
+    btnPublicEnterListen.addEventListener('click', () => handleJoinPublicLive('listen'));
+}
+
+if (btnToggleLiveChat) {
+    btnToggleLiveChat.addEventListener('click', () => {
+        isLiveChatHidden = !isLiveChatHidden;
+        if (liveOverlayStream) liveOverlayStream.classList.toggle('chat-hidden', isLiveChatHidden);
+        btnToggleLiveChat.classList.toggle('active', !isLiveChatHidden);
+    });
 }
 
 if (btnCopyLiveLink) {
@@ -1124,9 +1241,9 @@ if (btnCopyLiveLink) {
                 document.execCommand('copy');
                 tempInput.remove();
             }
-            btnCopyLiveLink.innerHTML = '<i class="fas fa-check"></i> Copied!';
+            btnCopyLiveLink.innerHTML = '<i class="fas fa-check"></i> <span class="hide-xs">Copied!</span>';
             setTimeout(() => {
-                if (btnCopyLiveLink) btnCopyLiveLink.innerHTML = '<i class="fas fa-share-alt"></i> Share';
+                if (btnCopyLiveLink) btnCopyLiveLink.innerHTML = '<i class="fas fa-share-alt"></i> <span class="hide-xs">Share</span>';
             }, 2000);
         } catch (e) {
             prompt('Copy this Public Video Call link:', shareUrl);
@@ -1134,21 +1251,20 @@ if (btnCopyLiveLink) {
     });
 }
 
-function handleJoinPublicLive() {
+function handleJoinPublicLive(mode = 'voice') {
+    closePublicPreviewModal();
     if (!myLocalFunnyAvatar) {
         myLocalFunnyAvatar = getRandomFunnyAvatar();
     }
 
     if (publicLiveBtn) {
         publicLiveBtn.disabled = true;
-        publicLiveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Entering Public Live...';
     }
 
-    socket.emit('public_live_join', { avatarUrl: myLocalFunnyAvatar }, async (response) => {
+    const startMuted = mode === 'listen';
+    socket.emit('public_live_join', { avatarUrl: myLocalFunnyAvatar, isAudioMuted: startMuted }, async (response) => {
         if (publicLiveBtn) {
             publicLiveBtn.disabled = false;
-            publicLiveBtn.innerHTML = '<i class="fas fa-broadcast-tower"></i> Public Video Call <span id="public-live-badge" class="live-btn-count-pill">Open</span>';
-            renderPublicLiveBadge(lastPublicLiveCount);
         }
 
         if (!response || !response.success) {
@@ -1161,30 +1277,45 @@ function handleJoinPublicLive() {
         currentGroupName = response.group.name || 'Public Video Call';
         myGroupMemberId = response.memberId;
         isCurrentGroupOwner = false;
+        serverRoomCount = typeof response.roomCount === 'number' ? response.roomCount : (response.existingMembers ? response.existingMembers.length + 1 : 1);
 
         userAvatarsMap.set(myGroupMemberId, myLocalFunnyAvatar);
 
-        // Update Top Live Header for Public Mode (No PIN, Open to All)
+        // Update Top Live Header cleanly for Public Mode
         if (roomGroupName) roomGroupName.innerText = 'Public Video Call';
         if (roomPinChip) {
             roomPinChip.innerHTML = '<i class="fas fa-globe"></i> Open to All';
         }
+        if (groupOnlineText) groupOnlineText.innerText = window.innerWidth <= 440 ? 'live' : 'in Public Call';
         if (btnCopyLiveLink) btnCopyLiveLink.classList.remove('hidden');
         if (btnDeleteGroup) btnDeleteGroup.classList.add('hidden');
+
+        isLiveChatHidden = false;
+        if (liveOverlayStream) liveOverlayStream.classList.remove('chat-hidden');
+        if (btnToggleLiveChat) btnToggleLiveChat.classList.add('active');
 
         localDisplayName.innerText = `${response.displayName} (You)`;
         localAvatarImg.src = myLocalFunnyAvatar;
 
+        const othersCount = Math.max(0, serverRoomCount - 1);
+        const peopleMsg = othersCount === 0
+            ? 'You are the first one in Public Call! Tap Share to invite friends.'
+            : `${serverRoomCount} people in Public Call right now. Talk, turn on camera, or chat below!`;
+
         if (liveOverlayStream) {
             liveOverlayStream.innerHTML = `
                 <div class="live-stream-welcome-bubble">
-                    <i class="fas fa-globe"></i> Welcome to Public Video Call! Talk, listen, turn on camera, or chat with GIFs freely.
+                    <i class="fas fa-globe"></i> ${peopleMsg}
                 </div>
             `;
         }
 
         showScreen('group-room-screen');
-        await initGroupVoiceRoom(response.existingMembers, { allowListenOnly: true });
+        await initGroupVoiceRoom(response.existingMembers, {
+            allowListenOnly: true,
+            skipMicRequest: mode === 'listen',
+            autoEnableCamera: mode === 'video'
+        });
     });
 }
 
@@ -1318,6 +1449,7 @@ function enterGroupRoom(pin, displayName, ownerToken, onComplete) {
         currentGroupName = response.group.name;
         myGroupMemberId = response.memberId;
         isCurrentGroupOwner = response.isOwner;
+        serverRoomCount = typeof response.roomCount === 'number' ? response.roomCount : (response.existingMembers ? response.existingMembers.length + 1 : 1);
 
         // Register local avatar in stable identity map
         userAvatarsMap.set(myGroupMemberId, myLocalFunnyAvatar);
@@ -1327,7 +1459,11 @@ function enterGroupRoom(pin, displayName, ownerToken, onComplete) {
         if (roomPinChip) {
             roomPinChip.innerHTML = `<i class="fas fa-lock"></i> PIN: <strong id="room-pin-display">${escapeHtml(currentGroupPin)}</strong>`;
         }
+        if (groupOnlineText) groupOnlineText.innerText = 'in room';
         if (btnCopyLiveLink) btnCopyLiveLink.classList.add('hidden');
+        isLiveChatHidden = false;
+        if (liveOverlayStream) liveOverlayStream.classList.remove('chat-hidden');
+        if (btnToggleLiveChat) btnToggleLiveChat.classList.add('active');
         localDisplayName.innerText = `${response.displayName}${response.isOwner ? ' (Host)' : ''}`;
         localAvatarImg.src = myLocalFunnyAvatar;
 
@@ -1371,19 +1507,7 @@ async function initGroupVoiceRoom(existingMembers, options = {}) {
     console.log('[Group] Initializing Voice Room with existing members:', existingMembers);
     cleanupGroupMedia();
 
-    // 1. Request microphone access (supports listen-only fallback if user only wants to watch/listen/chat)
-    try {
-        groupAudioStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            }
-        });
-        console.log('[Group] Microphone access granted.');
-        setupLocalSpeechDetection(groupAudioStream);
-    } catch (err) {
-        console.warn('[Group] Microphone not active (Listen-Only mode):', err);
+    const applyListenOnlyUI = (showHintBanner) => {
         groupAudioStream = null;
         isGroupAudioMuted = true;
         if (groupMicBtn) {
@@ -1396,13 +1520,34 @@ async function initGroupVoiceRoom(existingMembers, options = {}) {
             localMicIndicator.innerHTML = '<i class="fas fa-microphone-slash"></i>';
         }
         socket.emit('group_media_state', { isAudioMuted: true, isCameraOn: false });
-        if (options.allowListenOnly && liveOverlayStream) {
+        if (showHintBanner && liveOverlayStream) {
             const note = document.createElement('div');
             note.className = 'live-stream-welcome-bubble';
-            note.innerHTML = '<i class="fas fa-headphones"></i> Listening & Chat active. Tap the mic button anytime to speak!';
+            note.innerHTML = '<i class="fas fa-headphones"></i> Listen & Chat active. Tap the mic button anytime to speak!';
             liveOverlayStream.appendChild(note);
-        } else if (!options.allowListenOnly) {
-            alert('Could not access microphone. You can listen and chat, or tap mic to retry.');
+        }
+    };
+
+    // 1. Request microphone access unless user explicitly selected Listen & Chat Only
+    if (options.skipMicRequest) {
+        applyListenOnlyUI(true);
+    } else {
+        try {
+            groupAudioStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                }
+            });
+            console.log('[Group] Microphone access granted.');
+            setupLocalSpeechDetection(groupAudioStream);
+        } catch (err) {
+            console.warn('[Group] Microphone not active (Listen-Only fallback):', err);
+            applyListenOnlyUI(options.allowListenOnly);
+            if (!options.allowListenOnly) {
+                alert('Could not access microphone. You can still listen and chat, or tap mic to retry.');
+            }
         }
     }
 
@@ -1412,7 +1557,11 @@ async function initGroupVoiceRoom(existingMembers, options = {}) {
             groupMemberNames.set(member.memberId, member.displayName);
             const stableAvatar = getStableAvatarForUser(member.memberId, member.avatarUrl);
             createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, stableAvatar);
-            const peer = await createGroupPeerConnection(member.memberId, member.displayName, true, member.isCameraOn);
+            const connPromise = createGroupPeerConnection(member.memberId, member.displayName, true, member.isCameraOn);
+            groupPendingConnections.set(member.memberId, connPromise);
+            const peer = await connPromise;
+            groupPendingConnections.delete(member.memberId);
+
             if (peer) {
                 if (member.isCameraOn) {
                     peer.isCameraOn = true;
@@ -1436,6 +1585,34 @@ async function initGroupVoiceRoom(existingMembers, options = {}) {
 
     updateGroupOnlineCount();
     playSystemSound('connect');
+
+    // If user explicitly chose "Join With Camera & Voice", activate camera right away
+    if (options.autoEnableCamera && !isLocalCameraOn) {
+        await toggleGroupCamera();
+    }
+}
+
+// Shared helper for queued WebRTC renegotiation (prevents dropped offers if signaling isn't stable)
+async function renegotiateGroupPeer(peerId, peer) {
+    if (!peer || !peer.pc) return;
+    const pc = peer.pc;
+    if (pc.signalingState !== 'stable') {
+        peer.needsRenegotiation = true;
+        console.log(`[Group] Queuing renegotiation for ${peerId} (state: ${pc.signalingState})`);
+        return;
+    }
+    try {
+        peer.needsRenegotiation = false;
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('group_signal', {
+            to: peerId,
+            data: { offer }
+        });
+        console.log(`[Group] Renegotiation offer sent to ${peerId}`);
+    } catch (err) {
+        console.warn(`[Group] Renegotiation error for ${peerId}:`, err);
+    }
 }
 
 // Create RTCPeerConnection for a specific remote peer in the group
@@ -1471,38 +1648,34 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
         audioElement: remoteAudioEl,
         videoStream: null,
         isCameraOn: !!initialCameraOn,
-        isAudioMuted: false
+        isAudioMuted: false,
+        needsRenegotiation: false
     };
 
     groupPeers.set(targetMemberId, peerData);
 
-    // Add local audio tracks if available; otherwise add 'recvonly' audio transceiver so listeners still receive audio!
-    if (groupAudioStream && groupAudioStream.getAudioTracks()[0]) {
-        const audioTrack = groupAudioStream.getAudioTracks()[0];
-        pc.addTrack(audioTrack, groupAudioStream);
-    } else {
-        try {
-            pc.addTransceiver('audio', { direction: 'recvonly' });
-        } catch (e) {
-            console.warn('[Group] audio recvonly transceiver note:', e);
-        }
-    }
-
-    // Add local video track if camera is currently enabled
-    if (groupVideoStream && isLocalCameraOn) {
-        const videoTrack = groupVideoStream.getVideoTracks()[0];
-        if (videoTrack) {
-            pc.addTrack(videoTrack, groupVideoStream);
-        }
-    }
-
-    // Video transceiver configuration: use 'sendrecv' only if camera active, otherwise 'recvonly'
-    // This allows phone/mobile devices to connect seamlessly with camera OFF without throwing capture errors!
-    const videoDirection = (groupVideoStream && isLocalCameraOn) ? 'sendrecv' : 'recvonly';
+    // Exactly ONE audio transceiver per connection (with track if active, else recvonly so listeners can hear!)
+    const localAudioTrack = (groupAudioStream && groupAudioStream.getAudioTracks()[0]) || null;
     try {
-        pc.addTransceiver('video', { direction: videoDirection });
+        if (localAudioTrack) {
+            pc.addTransceiver(localAudioTrack, { direction: 'sendrecv', streams: [groupAudioStream] });
+        } else {
+            pc.addTransceiver('audio', { direction: 'recvonly' });
+        }
     } catch (e) {
-        console.warn('[Group] addTransceiver note:', e);
+        console.warn('[Group] audio transceiver init note:', e);
+    }
+
+    // Exactly ONE video transceiver per connection (never duplicate transceivers!)
+    const localVideoTrack = (groupVideoStream && isLocalCameraOn && groupVideoStream.getVideoTracks()[0]) || null;
+    try {
+        if (localVideoTrack) {
+            pc.addTransceiver(localVideoTrack, { direction: 'sendrecv', streams: [groupVideoStream] });
+        } else {
+            pc.addTransceiver('video', { direction: 'recvonly' });
+        }
+    } catch (e) {
+        console.warn('[Group] video transceiver init note:', e);
     }
 
     // ICE Candidate generation
@@ -1517,7 +1690,7 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
 
     // Remote Track received (Audio or Video)
     pc.ontrack = (event) => {
-        console.log(`[Group] ontrack from ${targetMemberId}: kind=${event.track.kind}`);
+        console.log(`[Group] ontrack from ${targetMemberId}: kind=${event.track.kind}, muted=${event.track.muted}`);
         const currentPeer = groupPeers.get(targetMemberId);
 
         if (event.track.kind === 'audio') {
@@ -1532,22 +1705,25 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
 
             if (currentPeer) {
                 currentPeer.videoStream = streamToPlay;
-                currentPeer.isCameraOn = true;
             }
 
             if (cardVideoEl) {
                 cardVideoEl.srcObject = streamToPlay;
-                cardVideoEl.classList.remove('hidden');
-                if (avatarBox) avatarBox.classList.add('hidden');
-                if (camBadge) {
-                    camBadge.className = 'media-badge cam-on';
-                    camBadge.innerHTML = '<i class="fas fa-video"></i>';
+                // Only show video if sender camera is actually active / frames are flowing (avoids black box when cam OFF!)
+                if ((currentPeer && currentPeer.isCameraOn) || !event.track.muted) {
+                    if (currentPeer) currentPeer.isCameraOn = true;
+                    cardVideoEl.classList.remove('hidden');
+                    if (avatarBox) avatarBox.classList.add('hidden');
+                    if (camBadge) {
+                        camBadge.className = 'media-badge cam-on';
+                        camBadge.innerHTML = '<i class="fas fa-video"></i>';
+                    }
+                    cardVideoEl.play().catch(e => console.warn('Remote video play blocked:', e));
                 }
-                cardVideoEl.play().catch(e => console.warn('Remote video play blocked:', e));
             }
 
             event.track.onunmute = () => {
-                console.log(`[Group] Track unmuted for ${targetMemberId}`);
+                console.log(`[Group] Video track unmuted for ${targetMemberId}`);
                 if (currentPeer) currentPeer.isCameraOn = true;
                 if (cardVideoEl) {
                     cardVideoEl.srcObject = streamToPlay;
@@ -1558,6 +1734,18 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
                         camBadge.innerHTML = '<i class="fas fa-video"></i>';
                     }
                     cardVideoEl.play().catch(e => {});
+                }
+            };
+
+            event.track.onmute = () => {
+                console.log(`[Group] Video track muted for ${targetMemberId}`);
+                if (currentPeer && !currentPeer.isCameraOn) {
+                    if (cardVideoEl) cardVideoEl.classList.add('hidden');
+                    if (avatarBox) avatarBox.classList.remove('hidden');
+                    if (camBadge) {
+                        camBadge.className = 'media-badge cam-off';
+                        camBadge.innerHTML = '<i class="fas fa-video-slash"></i>';
+                    }
                 }
             };
 
@@ -1576,6 +1764,10 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
 
     pc.oniceconnectionstatechange = () => {
         console.log(`[Group] ICE State with ${targetMemberId}: ${pc.iceConnectionState}`);
+        if (pc.iceConnectionState === 'failed' && isInitiator && typeof pc.restartIce === 'function') {
+            pc.restartIce();
+            renegotiateGroupPeer(targetMemberId, peerData);
+        }
     };
 
     // If initiator, create and send offer
@@ -1654,6 +1846,10 @@ socket.on('group_signal', async ({ from, data }) => {
                 data: { answer: answer }
             });
             console.log(`[Group] Sent answer to ${from}`);
+
+            if (peer.needsRenegotiation) {
+                renegotiateGroupPeer(from, peer);
+            }
         } else if (data.answer) {
             console.log(`[Group] Received answer from ${from}`);
             await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
@@ -1668,6 +1864,10 @@ socket.on('group_signal', async ({ from, data }) => {
                 }
             }
             groupQueuedCandidates.delete(from);
+
+            if (peer.needsRenegotiation) {
+                renegotiateGroupPeer(from, peer);
+            }
         } else if (data.candidate) {
             if (pc.remoteDescription && pc.remoteDescription.type) {
                 await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
@@ -1688,15 +1888,25 @@ socket.on('group_signal', async ({ from, data }) => {
 socket.on('group_member_joined', async (member) => {
     console.log(`[Group] New member joined: ${member.displayName} (${member.memberId})`);
     groupMemberNames.set(member.memberId, member.displayName);
+    if (typeof member.roomCount === 'number') serverRoomCount = member.roomCount;
     const stableAvatar = getStableAvatarForUser(member.memberId, member.avatarUrl);
     createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, stableAvatar);
+    if (member.isAudioMuted) {
+        const micBadge = document.getElementById(`mic-badge-${member.memberId}`);
+        if (micBadge) {
+            micBadge.className = 'media-badge mic-muted';
+            micBadge.innerHTML = '<i class="fas fa-microphone-slash"></i>';
+        }
+    }
     updateGroupOnlineCount();
     playSystemSound('connect');
 });
 
 // A member left the group room
-socket.on('group_member_left', ({ memberId }) => {
+socket.on('group_member_left', ({ memberId, roomCount }) => {
     console.log(`[Group] Member left: ${memberId}`);
+    if (typeof roomCount === 'number') serverRoomCount = roomCount;
+    else if (typeof serverRoomCount === 'number') serverRoomCount = Math.max(1, serverRoomCount - 1);
     removeRemoteParticipant(memberId);
     updateGroupOnlineCount();
     playSystemSound('disconnect');
@@ -1801,35 +2011,18 @@ async function toggleGroupCamera() {
             localCamIndicator.className = 'media-badge cam-on';
             localCamIndicator.innerHTML = '<i class="fas fa-video"></i>';
 
-            // Add/Replace video track on all peer connections, set transceiver to 'sendrecv', and renegotiate
+            // Add/Replace video track cleanly via exact video transceiver and renegotiate
             for (const [peerId, peer] of groupPeers.entries()) {
                 const pc = peer.pc;
-                const transceiver = pc.getTransceivers().find(t => (t.sender && t.sender.track && t.sender.track.kind === 'video') || (t.receiver && t.receiver.track && t.receiver.track.kind === 'video'));
-                const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video') ||
-                               pc.getSenders().find(s => !s.track);
-
+                if (!pc) continue;
+                const transceiver = getTransceiverByKind(pc, 'video');
                 if (transceiver) {
                     transceiver.direction = 'sendrecv';
-                }
-
-                if (sender) {
-                    await sender.replaceTrack(videoTrack);
+                    await transceiver.sender.replaceTrack(videoTrack);
                 } else {
-                    pc.addTrack(videoTrack, groupVideoStream);
+                    pc.addTransceiver(videoTrack, { direction: 'sendrecv', streams: [groupVideoStream] });
                 }
-
-                // ALWAYS renegotiate with this peer so their phone receives the new video track
-                try {
-                    const offer = await pc.createOffer();
-                    await pc.setLocalDescription(offer);
-                    socket.emit('group_signal', {
-                        to: peerId,
-                        data: { offer: offer }
-                    });
-                    console.log(`[Camera] Renegotiation offer sent to ${peerId}`);
-                } catch (e) {
-                    console.warn(`[Camera] Renegotiation note for ${peerId}:`, e);
-                }
+                await renegotiateGroupPeer(peerId, peer);
             }
 
             // Notify group peers that camera is ON
@@ -1864,34 +2057,20 @@ async function toggleGroupCamera() {
         localCamIndicator.className = 'media-badge cam-off';
         localCamIndicator.innerHTML = '<i class="fas fa-video-slash"></i>';
 
-        // 4. Remove/replace video track with null on all peers, set transceiver to 'recvonly', and renegotiate
+        // 4. Replace video track with null, revert transceiver to recvonly, and renegotiate
         for (const [peerId, peer] of groupPeers.entries()) {
             const pc = peer.pc;
-            const transceiver = pc.getTransceivers().find(t => (t.sender && t.sender.track && t.sender.track.kind === 'video') || (t.receiver && t.receiver.track && t.receiver.track.kind === 'video'));
-            const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
-
+            if (!pc) continue;
+            const transceiver = getTransceiverByKind(pc, 'video');
             if (transceiver) {
                 transceiver.direction = 'recvonly';
-            }
-            if (sender) {
                 try {
-                    await sender.replaceTrack(null);
+                    await transceiver.sender.replaceTrack(null);
                 } catch (e) {
                     console.warn('[Camera] Error setting replaceTrack null:', e);
                 }
             }
-
-            try {
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-                socket.emit('group_signal', {
-                    to: peerId,
-                    data: { offer: offer }
-                });
-                console.log(`[Camera] Renegotiation (camera off) offer sent to ${peerId}`);
-            } catch (e) {
-                console.warn(`[Camera] Renegotiation error for ${peerId}:`, e);
-            }
+            await renegotiateGroupPeer(peerId, peer);
         }
 
         // 5. Inform other participants that video is disabled
@@ -1907,7 +2086,7 @@ if (groupMicBtn) {
     groupMicBtn.addEventListener('click', toggleGroupMic);
 }
 
-// Mobile audio autoplay unlock on any tap inside the live room
+// Mobile audio & video autoplay unlock on any tap inside the live room
 const groupRoomScreenEl = document.getElementById('group-room-screen');
 if (groupRoomScreenEl) {
     groupRoomScreenEl.addEventListener('click', () => {
@@ -1917,11 +2096,14 @@ if (groupRoomScreenEl) {
         document.querySelectorAll('audio[id^="remote-audio-"]').forEach(el => {
             if (el.paused && el.srcObject) el.play().catch(() => {});
         });
+        document.querySelectorAll('video[id^="video-"]:not(.hidden)').forEach(el => {
+            if (el.paused && el.srcObject) el.play().catch(() => {});
+        });
     }, { passive: true });
 }
 
 async function toggleGroupMic() {
-    // If joined in Listen-Only mode, request mic now and upgrade peers
+    // If joined in Listen-Only mode, request mic now and upgrade peers cleanly
     if (!groupAudioStream) {
         try {
             groupAudioStream = await navigator.mediaDevices.getUserMedia({
@@ -1938,27 +2120,14 @@ async function toggleGroupMic() {
             for (const [peerId, peer] of groupPeers.entries()) {
                 const pc = peer.pc;
                 if (!pc) continue;
-                const transceiver = pc.getTransceivers().find(t =>
-                    (t.sender && t.sender.track && t.sender.track.kind === 'audio') ||
-                    (t.receiver && t.receiver.track && t.receiver.track.kind === 'audio')
-                );
+                const transceiver = getTransceiverByKind(pc, 'audio');
                 if (transceiver) {
                     transceiver.direction = 'sendrecv';
-                }
-                const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio') ||
-                               (transceiver && transceiver.sender);
-                if (sender) {
-                    await sender.replaceTrack(audioTrack);
+                    await transceiver.sender.replaceTrack(audioTrack);
                 } else {
-                    pc.addTrack(audioTrack, groupAudioStream);
+                    pc.addTransceiver(audioTrack, { direction: 'sendrecv', streams: [groupAudioStream] });
                 }
-                try {
-                    const offer = await pc.createOffer();
-                    await pc.setLocalDescription(offer);
-                    socket.emit('group_signal', { to: peerId, data: { offer } });
-                } catch (e) {
-                    console.warn('[Mic] Renegotiation note:', e);
-                }
+                await renegotiateGroupPeer(peerId, peer);
             }
         } catch (err) {
             console.warn('[Mic] Could not enable microphone:', err);
@@ -2102,6 +2271,7 @@ function removeRemoteParticipant(memberId) {
         if (peer.pc) {
             peer.pc.onicecandidate = null;
             peer.pc.ontrack = null;
+            peer.pc.oniceconnectionstatechange = null;
             peer.pc.close();
         }
         if (peer.audioElement) {
@@ -2110,6 +2280,9 @@ function removeRemoteParticipant(memberId) {
         }
         groupPeers.delete(memberId);
     }
+    groupPendingConnections.delete(memberId);
+    groupQueuedCandidates.delete(memberId);
+    groupMemberNames.delete(memberId);
 
     const card = document.getElementById(`card-${memberId}`);
     if (card) {
@@ -2119,9 +2292,17 @@ function removeRemoteParticipant(memberId) {
 }
 
 function updateGroupOnlineCount() {
-    const total = groupPeers.size + 1; // peers + self
+    const cardsCount = groupParticipantsGrid ? groupParticipantsGrid.querySelectorAll('.participant-card').length : 1;
+    const total = typeof serverRoomCount === 'number' ? Math.max(serverRoomCount, cardsCount) : Math.max(cardsCount, groupPeers.size + 1);
     if (groupOnlineCount) {
         groupOnlineCount.innerText = total;
+    }
+    if (groupOnlineText) {
+        if (window.innerWidth <= 440) {
+            groupOnlineText.innerText = isPublicRoomMode ? 'live' : 'in';
+        } else {
+            groupOnlineText.innerText = isPublicRoomMode ? 'in Public Call' : 'in room';
+        }
     }
     updateLiveGridLayout();
 }
@@ -2160,6 +2341,7 @@ function leaveGroupRoom() {
     myGroupMemberId = null;
     isCurrentGroupOwner = false;
     isPublicRoomMode = false;
+    serverRoomCount = null;
     if (btnCopyLiveLink) btnCopyLiveLink.classList.add('hidden');
 
     showScreen(wasPublic ? 'start-screen' : 'group-lobby-screen');
@@ -2407,124 +2589,94 @@ function escapeHtml(str) {
         .replace(/'/g, '&#39;');
 }
 
+// 100% Verified Healthy Animated GIFs (Zero 404 or deleted-placeholder assets)
 const CURATED_GIFS = {
     trending: [
         'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif',
         'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif',
         'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
-        'https://media.giphy.com/media/DhstvI3CH0EGtQ80IL/giphy.gif',
         'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif',
         'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif',
-        'https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif',
-        'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif'
+        'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif'
     ],
     laugh: [
         'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif',
-        'https://media.giphy.com/media/10JhviFuU2gWS6W/giphy.gif',
         'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif',
-        'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif',
         'https://media.giphy.com/media/3o7TKMt1VVNkHV2PaE/giphy.gif',
         'https://media.giphy.com/media/9MFsKQ8A6HCN2/giphy.gif'
     ],
     dance: [
         'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif',
-        'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif',
-        'https://media.giphy.com/media/kuqMAJaK9GK64/giphy.gif',
-        'https://media.giphy.com/media/14qb1Uhf40ndy8/giphy.gif',
-        'https://media.giphy.com/media/l0amJbM1KxJAaqIgg/giphy.gif',
-        'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif'
-    ],
-    fire: [
-        'https://media.giphy.com/media/QMHoU66sBXCAHonOmG/giphy.gif',
-        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif',
-        'https://media.giphy.com/media/3ov9jOJSQhGCthsAn6/giphy.gif',
-        'https://media.giphy.com/media/xT0Gqz4x4eLd5gDms0/giphy.gif',
-        'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif'
-    ],
-    love: [
-        'https://media.giphy.com/media/3oriO04qxVwuM5ZwXY/giphy.gif',
         'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
-        'https://media.giphy.com/media/26BRv0ThflsHCqDrG/giphy.gif',
-        'https://media.giphy.com/media/l4pTfx2qLszoacZRS/giphy.gif',
-        'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif'
-    ],
-    anime: [
-        'https://media.giphy.com/media/7kn27lnYSAQ9O/giphy.gif',
-        'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif',
-        'https://media.giphy.com/media/11vD9bCP2HHN28/giphy.gif',
-        'https://media.giphy.com/media/wkW0maGDN1OBG/giphy.gif',
-        'https://media.giphy.com/media/kd9BlRovbPOykL6YzX/giphy.gif'
-    ],
-    meme: [
-        'https://media.giphy.com/media/QMHoU66sBXCAHonOmG/giphy.gif',
-        'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif',
-        'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
-        'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif',
-        'https://media.giphy.com/media/d3mlE7uhX8KFgEmY/giphy.gif',
-        'https://media.giphy.com/media/9b5oSOGDESrCw/giphy.gif'
-    ],
-    clap: [
-        'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif',
-        'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif',
-        'https://media.giphy.com/media/7rj2ieuN2KSZO/giphy.gif',
-        'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif'
-    ],
-    wow: [
-        'https://media.giphy.com/media/7kn27lnYSAQ9O/giphy.gif',
-        'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
-        'https://media.giphy.com/media/DhstvI3CH0EGtQ80IL/giphy.gif',
-        'https://media.giphy.com/media/26AHzqU91X3V37BQA/giphy.gif',
-        'https://media.giphy.com/media/l0HlvtIP80nupEFtS/giphy.gif',
+        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif',
         'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif'
     ],
+    fire: [
+        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif',
+        'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
+        'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif',
+        'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif'
+    ],
+    love: [
+        'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif',
+        'https://media.giphy.com/media/26BRv0ThflsHCqDrG/giphy.gif',
+        'https://media.giphy.com/media/l4pTfx2qLszoacZRS/giphy.gif',
+        'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif'
+    ],
+    anime: [
+        'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif',
+        'https://media.giphy.com/media/L95W4wv8nnb9K/giphy.gif',
+        'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif',
+        'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif'
+    ],
+    meme: [
+        'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif',
+        'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
+        'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif',
+        'https://media.giphy.com/media/d3mlE7uhX8KFgEmY/giphy.gif',
+        'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif',
+        'https://media.giphy.com/media/9MFsKQ8A6HCN2/giphy.gif'
+    ],
+    clap: [
+        'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif',
+        'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif',
+        'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif',
+        'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif'
+    ],
+    wow: [
+        'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif',
+        'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif',
+        'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif',
+        'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif'
+    ],
     sad: [
-        'https://media.giphy.com/media/OPU660alU7j2g/giphy.gif',
         'https://media.giphy.com/media/d2lcHJTG5Tscg/giphy.gif',
         'https://media.giphy.com/media/L95W4wv8nnb9K/giphy.gif',
-        'https://media.giphy.com/media/2WxWfavuNDiF2/giphy.gif'
+        'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif',
+        'https://media.giphy.com/media/3o7TKMt1VVNkHV2PaE/giphy.gif'
     ]
 };
 
 const GIF_METADATA = [
     { url: 'https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif', tags: ['dance', 'party', 'parrot', 'groove', 'trending', 'fun', 'music'] },
-    { url: 'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif', tags: ['cat', 'vibing', 'vibe', 'cute', 'meme', 'trending', 'music', 'chill'] },
-    { url: 'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif', tags: ['leonardo', 'dicaprio', 'cheers', 'toast', 'celebrate', 'trending', 'meme', 'wow', 'champagne', 'congrats'] },
-    { url: 'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif', tags: ['laugh', 'lol', 'haha', 'funny', 'joke', 'meme', 'giggle', 'comedy'] },
-    { url: 'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif', tags: ['dance', 'groove', 'cool', 'trending', 'happy', 'party'] },
-    { url: 'https://media.giphy.com/media/QMHoU66sBXCAHonOmG/giphy.gif', tags: ['fire', 'this is fine', 'fine', 'burn', 'flame', 'meme', 'coffee'] },
-    { url: 'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif', tags: ['fire', 'cheers', 'greatsby', 'toast', 'lit', 'party', 'rich'] },
-    { url: 'https://media.giphy.com/media/7kn27lnYSAQ9O/giphy.gif', tags: ['anime', 'wow', 'shocked', 'hype', 'eyes', 'omg', 'surprise'] },
-    { url: 'https://media.giphy.com/media/DhstvI3CH0EGtQ80IL/giphy.gif', tags: ['thumbs up', 'ok', 'good', 'trending', 'wow', 'hype', 'yes', 'approve'] },
-    { url: 'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif', tags: ['laugh', 'smile', 'happy', 'cheers', 'toast', 'friendly'] },
-    { url: 'https://media.giphy.com/media/10JhviFuU2gWS6W/giphy.gif', tags: ['laugh', 'lol', 'haha', 'giggle', 'baby', 'cute'] },
-    { url: 'https://media.giphy.com/media/26n6Gx9moCdu1GdHL/giphy.gif', tags: ['dance', 'happy', 'laugh', 'joy', 'celebration'] },
-    { url: 'https://media.giphy.com/media/3o7TKMt1VVNkHV2PaE/giphy.gif', tags: ['laugh', 'haha', 'dead', 'lmao', 'funny'] },
-    { url: 'https://media.giphy.com/media/9MFsKQ8A6HCN2/giphy.gif', tags: ['laugh', 'hysterical', 'lol', 'wheeze', 'comedy'] },
-    { url: 'https://media.giphy.com/media/kuqMAJaK9GK64/giphy.gif', tags: ['dance', 'carlton', 'fresh prince', 'funny', 'moves'] },
-    { url: 'https://media.giphy.com/media/14qb1Uhf40ndy8/giphy.gif', tags: ['dance', 'snoop dogg', 'hip hop', 'groove', 'cool'] },
-    { url: 'https://media.giphy.com/media/l0amJbM1KxJAaqIgg/giphy.gif', tags: ['dance', 'disco', 'groovy', 'party', 'music'] },
-    { url: 'https://media.giphy.com/media/3ov9jOJSQhGCthsAn6/giphy.gif', tags: ['fire', 'lit', 'explosion', 'boom', 'hot'] },
-    { url: 'https://media.giphy.com/media/xT0Gqz4x4eLd5gDms0/giphy.gif', tags: ['fire', 'flame', 'blaze', 'lit', 'hot'] },
-    { url: 'https://media.giphy.com/media/3oriO04qxVwuM5ZwXY/giphy.gif', tags: ['love', 'heart', 'hug', 'affection', 'sweet', 'hearts'] },
-    { url: 'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif', tags: ['love', 'hugs', 'cuddle', 'sweet', 'warm'] },
-    { url: 'https://media.giphy.com/media/26BRv0ThflsHCqDrG/giphy.gif', tags: ['love', 'heart eyes', 'romantic', 'crush', 'cute'] },
-    { url: 'https://media.giphy.com/media/l4pTfx2qLszoacZRS/giphy.gif', tags: ['love', 'hug', 'hugging', 'friends', 'caring'] },
-    { url: 'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif', tags: ['anime', 'excited', 'energy', 'hype', 'jump'] },
-    { url: 'https://media.giphy.com/media/11vD9bCP2HHN28/giphy.gif', tags: ['anime', 'shocked', 'gasp', 'omg', 'eyes'] },
-    { url: 'https://media.giphy.com/media/wkW0maGDN1OBG/giphy.gif', tags: ['anime', 'dance', 'cute', 'chibi', 'girl'] },
-    { url: 'https://media.giphy.com/media/kd9BlRovbPOykL6YzX/giphy.gif', tags: ['anime', 'spark', 'magical', 'glow', 'point'] },
-    { url: 'https://media.giphy.com/media/d3mlE7uhX8KFgEmY/giphy.gif', tags: ['meme', 'think', 'smart', 'roll safe', 'brain', 'logic'] },
-    { url: 'https://media.giphy.com/media/9b5oSOGDESrCw/giphy.gif', tags: ['meme', 'doge', 'wow', 'dog', 'shiba'] },
-    { url: 'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif', tags: ['clap', 'applause', 'bravo', 'congrats', 'clapping'] },
-    { url: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif', tags: ['clap', 'applause', 'respect', 'slow clap'] },
-    { url: 'https://media.giphy.com/media/7rj2ieuN2KSZO/giphy.gif', tags: ['clap', 'standing ovation', 'cheers', 'bravo'] },
-    { url: 'https://media.giphy.com/media/26AHzqU91X3V37BQA/giphy.gif', tags: ['wow', 'gasp', 'shocked', 'omg', 'surprised'] },
-    { url: 'https://media.giphy.com/media/l0HlvtIP80nupEFtS/giphy.gif', tags: ['wow', 'dramatic', 'shock', 'unbelievable'] },
-    { url: 'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif', tags: ['wow', 'jaw drop', 'speechless', 'shocked'] },
-    { url: 'https://media.giphy.com/media/OPU660alU7j2g/giphy.gif', tags: ['sad', 'cry', 'crying', 'tears', 'cat', 'heartbroken'] },
-    { url: 'https://media.giphy.com/media/d2lcHJTG5Tscg/giphy.gif', tags: ['sad', 'cry', 'rain', 'depressed', 'grief'] },
-    { url: 'https://media.giphy.com/media/L95W4wv8nnb9K/giphy.gif', tags: ['sad', 'tears', 'crying', 'sorrow', 'hurt'] },
-    { url: 'https://media.giphy.com/media/2WxWfavuNDiF2/giphy.gif', tags: ['sad', 'wipe tears', 'weep', 'cry', 'emotional'] }
+    { url: 'https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif', tags: ['cat', 'vibing', 'vibe', 'cute', 'meme', 'trending', 'love', 'hug'] },
+    { url: 'https://media.giphy.com/media/3o72F8t9TDi2xVnxOE/giphy.gif', tags: ['surprised', 'wow', 'omg', 'trending', 'meme', 'shocked'] },
+    { url: 'https://media.giphy.com/media/artj92V8o75VPL7AeQ/giphy.gif', tags: ['laugh', 'lol', 'haha', 'funny', 'joke', 'meme', 'comedy'] },
+    { url: 'https://media.giphy.com/media/l3q2K5jinAlChoCLS/giphy.gif', tags: ['blink', 'wtf', 'meme', 'trending', 'wow', 'confused'] },
+    { url: 'https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif', tags: ['leonardo', 'dicaprio', 'fire', 'cheers', 'lit', 'party', 'congrats'] },
+    { url: 'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif', tags: ['clap', 'laugh', 'cheers', 'toast', 'congrats', 'leo'] },
+    { url: 'https://media.giphy.com/media/3o7TKMt1VVNkHV2PaE/giphy.gif', tags: ['laugh', 'haha', 'lmao', 'funny', 'smile'] },
+    { url: 'https://media.giphy.com/media/9MFsKQ8A6HCN2/giphy.gif', tags: ['laugh', 'lizard', 'lol', 'hehe', 'comedy', 'meme'] },
+    { url: 'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif', tags: ['party', 'celebrate', 'dance', 'fire', 'happy', 'lit'] },
+    { url: 'https://media.giphy.com/media/26BRv0ThflsHCqDrG/giphy.gif', tags: ['love', 'heart', 'sweet', 'kiss', 'romance'] },
+    { url: 'https://media.giphy.com/media/l4pTfx2qLszoacZRS/giphy.gif', tags: ['love', 'hearts', 'cute', 'hug', 'sweet'] },
+    { url: 'https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif', tags: ['anime', 'excited', 'happy', 'star wars', 'hype'] },
+    { url: 'https://media.giphy.com/media/d3mlE7uhX8KFgEmY/giphy.gif', tags: ['meme', 'think', 'smart', 'roll safe', 'brain', 'clever'] },
+    { url: 'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif', tags: ['mind blown', 'wow', 'fire', 'clap', 'amazing'] },
+    { url: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif', tags: ['mind blown', 'clap', 'wow', 'omg', 'genius'] },
+    { url: 'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif', tags: ['wave', 'hi', 'hello', 'hey', 'forrest gump', 'trending'] },
+    { url: 'https://media.giphy.com/media/d2lcHJTG5Tscg/giphy.gif', tags: ['sad', 'cry', 'crying', 'tears', 'emotional'] },
+    { url: 'https://media.giphy.com/media/L95W4wv8nnb9K/giphy.gif', tags: ['sad', 'pikachu', 'anime', 'cry', 'tears', 'cute'] }
 ];
 
 let currentGifCategory = 'trending';
@@ -2655,8 +2807,24 @@ if (btnClearGifSearch) {
 }
 
 function loadGifsForCategory(category) {
-    const gifs = CURATED_GIFS[category] || CURATED_GIFS.trending;
-    renderGifsInSheet(gifs);
+    const baseGifs = CURATED_GIFS[category] || CURATED_GIFS.trending;
+    renderGifsInSheet(baseGifs);
+
+    // Enrich dynamically from live search so tabs always stay fresh
+    const catQuery = category === 'trending' ? 'funny reaction' : category;
+    fetch(`/api/gifs/search?q=${encodeURIComponent(catQuery)}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+            if (!data || !Array.isArray(data.results) || !gifSheetGrid) return;
+            if (currentGifCategory !== category || (gifSheetSearch && gifSheetSearch.value.trim())) return;
+            const seen = new Set(baseGifs);
+            const extras = data.results.filter(u => !seen.has(u)).slice(0, 10);
+            extras.forEach(url => {
+                const card = createGifCardElement(url);
+                gifSheetGrid.appendChild(card);
+            });
+        })
+        .catch(() => {});
 }
 
 async function searchGifs(query) {
@@ -2723,6 +2891,21 @@ async function searchGifs(query) {
     }
 }
 
+function createGifCardElement(url) {
+    const card = document.createElement('div');
+    card.className = 'gif-item-card';
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = 'GIF';
+    img.loading = 'lazy';
+    img.onerror = () => card.remove();
+    card.appendChild(img);
+    card.addEventListener('click', () => {
+        selectAndSendGif(url);
+    });
+    return card;
+}
+
 function renderGifsInSheet(gifUrls) {
     if (!gifSheetGrid) return;
     gifSheetGrid.innerHTML = '';
@@ -2733,13 +2916,7 @@ function renderGifsInSheet(gifUrls) {
     }
 
     gifUrls.forEach(url => {
-        const card = document.createElement('div');
-        card.className = 'gif-item-card';
-        card.innerHTML = `<img src="${url}" alt="GIF" loading="lazy">`;
-        card.addEventListener('click', () => {
-            selectAndSendGif(url);
-        });
-        gifSheetGrid.appendChild(card);
+        gifSheetGrid.appendChild(createGifCardElement(url));
     });
 }
 
@@ -2748,16 +2925,16 @@ function selectAndSendGif(gifUrl) {
     closeGifDrawer();
 }
 
-// Auto-enter Public Video Call if opened via direct ?live=public link
+// Show Public Video Call Live Preview Sheet if opened via direct ?live=public link
 (function checkDirectPublicLink() {
     try {
         const params = new URLSearchParams(window.location.search);
         if (params.get('live') === 'public') {
             if (socket.connected) {
-                handleJoinPublicLive();
+                openPublicPreviewModal();
             } else {
                 socket.once('connect', () => {
-                    handleJoinPublicLive();
+                    openPublicPreviewModal();
                 });
             }
         }

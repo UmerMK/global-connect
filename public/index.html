@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=5.1">
     <style>
         .visualizer-pair {
             display: flex;
@@ -84,8 +84,10 @@
                             Start Talking Now <i class="fas fa-play"></i>
                         </button>
                         <button id="public-live-btn" class="primary-btn public-live-hero-btn">
-                            <i class="fas fa-broadcast-tower"></i> Public Video Call
-                            <span id="public-live-badge" class="live-btn-count-pill">Open</span>
+                            <span class="public-btn-main">
+                                <i class="fas fa-broadcast-tower"></i> Public Video Call
+                            </span>
+                            <span id="public-live-badge" class="live-btn-count-pill">0 in Public Call</span>
                         </button>
                         <button id="group-lobby-btn" class="primary-btn group-hero-btn">
                             <i class="fas fa-users"></i> Group Chat (Friends)
@@ -148,9 +150,9 @@
                     <h3>Contact Us</h3>
                     <p>Have questions or feedback? We'd love to hear from you.</p>
                     <div class="contact-links">
-                        <a href="https://t.me/umer_2" class="contact-card">
+                        <a href="https://t.me/umer_jr" target="_blank" rel="noopener" class="contact-card">
                             <i class="fab fa-telegram"></i>
-                            <span>Ibnu muktar</span>
+                            <span>@umer_jr (Ibnu muktar)</span>
                         </a>
                         <a href="tel:+251900380961" class="contact-card">
                             <i class="fas fa-phone"></i>
@@ -162,7 +164,7 @@
                 <footer class="landing-footer">
                     <p>The easiest way to talk to the world.</p>
                     <div class="footer-links">
-                        <a href="https://t.me/umer_2">Telegram</a> •
+                        <a href="https://t.me/umer_jr" target="_blank" rel="noopener">Telegram (@umer_jr)</a> •
                         <a href="tel:+251900380961">Call</a>
                     </div>
                 </footer>
@@ -235,46 +237,49 @@
                     </div>
                 </div>
 
-                <!-- TikTok Live Style Dual Split-Screen Video Stage for 1-on-1 Private Chat -->
-                <div id="private-video-stage" class="private-video-stage hidden">
-                    <!-- Partner / Remote Pane -->
-                    <div class="split-video-pane remote-pane" id="private-remote-pane">
-                        <video id="private-remote-video" class="split-video-feed hidden" autoplay playsinline webkit-playsinline></video>
-                        <div id="private-remote-placeholder" class="video-placeholder-view">
-                            <div class="placeholder-avatar-ring">
-                                <img id="split-partner-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=Stranger" alt="Partner">
+                <!-- Flexible Stage Wrapper separating Video/Chat cleanly from Header and Input Bar -->
+                <div class="private-stage-wrapper" id="private-stage-wrapper">
+                    <!-- TikTok Live Style Dual Split-Screen Video Stage for 1-on-1 Private Chat -->
+                    <div id="private-video-stage" class="private-video-stage hidden">
+                        <!-- Partner / Remote Pane -->
+                        <div class="split-video-pane remote-pane" id="private-remote-pane">
+                            <video id="private-remote-video" class="split-video-feed hidden" autoplay playsinline webkit-playsinline></video>
+                            <div id="private-remote-placeholder" class="video-placeholder-view">
+                                <div class="placeholder-avatar-ring">
+                                    <img id="split-partner-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=Stranger" alt="Partner">
+                                </div>
+                                <span class="placeholder-label" id="split-partner-name">Partner</span>
+                                <span class="placeholder-status"><i class="fas fa-video-slash"></i> Camera Off</span>
                             </div>
-                            <span class="placeholder-label" id="split-partner-name">Partner</span>
-                            <span class="placeholder-status"><i class="fas fa-video-slash"></i> Camera Off</span>
-                        </div>
-                        <div class="video-overlay-badge top-left">
-                            <i class="fas fa-circle online-mini-dot"></i> <span id="split-remote-tag">Partner</span>
-                        </div>
-                    </div>
-
-                    <!-- User / Local Pane -->
-                    <div class="split-video-pane local-pane" id="private-local-pane">
-                        <video id="private-local-video" class="split-video-feed hidden" autoplay playsinline webkit-playsinline muted></video>
-                        <div id="private-local-placeholder" class="video-placeholder-view">
-                            <div class="placeholder-avatar-ring">
-                                <img id="split-local-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=You" alt="You">
+                            <div class="video-overlay-badge top-left">
+                                <i class="fas fa-circle online-mini-dot"></i> <span id="split-remote-tag">Partner</span>
                             </div>
-                            <span class="placeholder-label">You</span>
-                            <span class="placeholder-status"><i class="fas fa-video-slash"></i> Camera Off</span>
                         </div>
-                        <div class="video-overlay-badge top-left">
-                            <i class="fas fa-user"></i> You
+
+                        <!-- User / Local Pane -->
+                        <div class="split-video-pane local-pane" id="private-local-pane">
+                            <video id="private-local-video" class="split-video-feed hidden" autoplay playsinline webkit-playsinline muted></video>
+                            <div id="private-local-placeholder" class="video-placeholder-view">
+                                <div class="placeholder-avatar-ring">
+                                    <img id="split-local-avatar" src="https://api.dicebear.com/7.x/avataaars/svg?seed=You" alt="You">
+                                </div>
+                                <span class="placeholder-label">You</span>
+                                <span class="placeholder-status"><i class="fas fa-video-slash"></i> Camera Off</span>
+                            </div>
+                            <div class="video-overlay-badge top-left">
+                                <i class="fas fa-user"></i> You
+                            </div>
+                        </div>
+
+                        <!-- Split Center Divider Badge -->
+                        <div class="split-center-divider">
+                            <span class="live-pill"><i class="fas fa-bolt"></i> LIVE</span>
                         </div>
                     </div>
 
-                    <!-- Split Center Divider Badge -->
-                    <div class="split-center-divider">
-                        <span class="live-pill"><i class="fas fa-bolt"></i> LIVE</span>
+                    <div id="messages" class="messages-area">
+                        <div class="system-msg">You are connected! Say hello.</div>
                     </div>
-                </div>
-
-                <div id="messages" class="messages-area">
-                    <div class="system-msg">You are connected! Say hello.</div>
                 </div>
 
                 <div class="input-bar">
@@ -387,23 +392,27 @@
                         </div>
                     </div>
                     <div class="live-header-right">
-                        <button id="btn-copy-live-link" class="live-share-pill-btn hidden" title="Copy Public Live Link">
-                            <i class="fas fa-share-alt"></i> Share
-                        </button>
-                        <div class="live-viewers-chip" title="Connected in Room">
-                            <i class="fas fa-user-friends"></i>
+                        <div class="live-viewers-chip" id="group-viewers-chip" title="Connected in Room">
+                            <i class="fas fa-users"></i>
                             <span id="group-online-count">1</span>
+                            <span id="group-online-text" class="viewer-label-text">in room</span>
                         </div>
+                        <button id="btn-toggle-live-chat" class="live-chat-toggle-btn" title="Show/Hide Live Chat">
+                            <i class="fas fa-comment-dots"></i>
+                        </button>
+                        <button id="btn-copy-live-link" class="live-share-pill-btn hidden" title="Copy Public Live Link">
+                            <i class="fas fa-share-alt"></i> <span class="hide-xs">Share</span>
+                        </button>
                         <button id="btn-delete-group" class="danger-btn-mini hidden" title="Delete Group (Owner Only)">
-                            <i class="fas fa-trash-alt"></i> Delete
+                            <i class="fas fa-trash-alt"></i>
                         </button>
                         <button id="btn-leave-group" class="live-leave-pill-btn" title="Leave Room">
-                            <i class="fas fa-sign-out-alt"></i> Leave
+                            <i class="fas fa-sign-out-alt"></i> <span class="hide-xs">Leave</span>
                         </button>
                     </div>
                 </div>
 
-                <!-- Full-Bleed Split Video Stage -->
+                <!-- Full-Bleed Responsive Split Video Stage -->
                 <div class="live-stage-viewport">
                     <div id="group-participants-grid" class="live-grid layout-1">
                         <!-- Local participant card (You) -->
@@ -415,7 +424,7 @@
                                     <div class="speaking-halo" id="local-speaking-halo"></div>
                                 </div>
                                 <!-- Video view when camera is ON -->
-                                <video id="local-video-preview" class="participant-video hidden" autoplay playsinline muted></video>
+                                <video id="local-video-preview" class="participant-video hidden" autoplay playsinline webkit-playsinline muted></video>
                                 
                                 <div class="status-overlay">
                                     <span id="local-speaking-pill" class="speaking-pill hidden">Speaking</span>
@@ -436,47 +445,47 @@
 
                         <!-- Dynamic remote participant cards inserted here -->
                     </div>
-                </div>
 
-                <!-- Floating Transparent Live Chat Stream (TikTok Live comments & GIFs) -->
-                <div id="live-overlay-stream" class="live-stream-overlay">
-                    <div class="live-stream-welcome-bubble">
-                        <i class="fas fa-sparkles"></i> Welcome to the live room! Tap the GIF button or chat below.
-                    </div>
-                </div>
-
-                <!-- Backdrop to tap outside GIF drawer -->
-                <div id="gif-drawer-backdrop" class="gif-drawer-backdrop hidden"></div>
-
-                <!-- Sliding Keyboard-Style GIF Drawer -->
-                <div id="gif-keyboard-drawer" class="gif-keyboard-sheet">
-                    <div class="gif-sheet-handle-bar">
-                        <span class="gif-sheet-handle"></span>
-                    </div>
-                    <div class="gif-sheet-header">
-                        <div class="gif-search-wrapper">
-                            <i class="fas fa-search"></i>
-                            <input type="text" id="gif-sheet-search" placeholder="Search GIFs or paste URL..." autocomplete="off">
-                            <button id="btn-clear-gif-search" class="clear-icon-btn hidden"><i class="fas fa-times-circle"></i></button>
+                    <!-- Floating Transparent Live Chat Stream (Over Video Stage Only, Never Covers Controls) -->
+                    <div id="live-overlay-stream" class="live-stream-overlay">
+                        <div class="live-stream-welcome-bubble">
+                            <i class="fas fa-sparkles"></i> Welcome to the live room! Tap the GIF button or chat below.
                         </div>
-                        <button id="btn-close-gif-drawer" class="close-sheet-btn" title="Close"><i class="fas fa-chevron-down"></i></button>
                     </div>
-                    <!-- Quick Tag Chips -->
-                    <div class="gif-tags-scroll" id="gif-tags-container">
-                        <button class="gif-tag-chip active" data-tag="trending">🔥 Trending</button>
-                        <button class="gif-tag-chip" data-tag="laugh">😂 Laugh</button>
-                        <button class="gif-tag-chip" data-tag="dance">💃 Dance</button>
-                        <button class="gif-tag-chip" data-tag="fire">🔥 Lit</button>
-                        <button class="gif-tag-chip" data-tag="love">❤️ Love</button>
-                        <button class="gif-tag-chip" data-tag="anime">🐱 Anime</button>
-                        <button class="gif-tag-chip" data-tag="meme">🎉 Memes</button>
-                        <button class="gif-tag-chip" data-tag="clap">👏 Clap</button>
-                        <button class="gif-tag-chip" data-tag="wow">🤯 Wow</button>
-                        <button class="gif-tag-chip" data-tag="sad">😭 Sad</button>
-                    </div>
-                    <!-- GIF Results Grid -->
-                    <div id="gif-sheet-grid" class="gif-keyboard-grid">
-                        <div class="gif-loading-state"><i class="fas fa-spinner fa-spin"></i> Loading GIFs...</div>
+
+                    <!-- Backdrop to tap outside GIF drawer -->
+                    <div id="gif-drawer-backdrop" class="gif-drawer-backdrop hidden"></div>
+
+                    <!-- Sliding Keyboard-Style GIF Drawer -->
+                    <div id="gif-keyboard-drawer" class="gif-keyboard-sheet">
+                        <div class="gif-sheet-handle-bar">
+                            <span class="gif-sheet-handle"></span>
+                        </div>
+                        <div class="gif-sheet-header">
+                            <div class="gif-search-wrapper">
+                                <i class="fas fa-search"></i>
+                                <input type="text" id="gif-sheet-search" placeholder="Search GIFs or paste URL..." autocomplete="off">
+                                <button id="btn-clear-gif-search" class="clear-icon-btn hidden"><i class="fas fa-times-circle"></i></button>
+                            </div>
+                            <button id="btn-close-gif-drawer" class="close-sheet-btn" title="Close"><i class="fas fa-chevron-down"></i></button>
+                        </div>
+                        <!-- Quick Tag Chips -->
+                        <div class="gif-tags-scroll" id="gif-tags-container">
+                            <button class="gif-tag-chip active" data-tag="trending">🔥 Trending</button>
+                            <button class="gif-tag-chip" data-tag="laugh">😂 Laugh</button>
+                            <button class="gif-tag-chip" data-tag="dance">💃 Dance</button>
+                            <button class="gif-tag-chip" data-tag="fire">🔥 Lit</button>
+                            <button class="gif-tag-chip" data-tag="love">❤️ Love</button>
+                            <button class="gif-tag-chip" data-tag="anime">🐱 Anime</button>
+                            <button class="gif-tag-chip" data-tag="meme">🎉 Memes</button>
+                            <button class="gif-tag-chip" data-tag="clap">👏 Clap</button>
+                            <button class="gif-tag-chip" data-tag="wow">🤯 Wow</button>
+                            <button class="gif-tag-chip" data-tag="sad">😭 Sad</button>
+                        </div>
+                        <!-- GIF Results Grid -->
+                        <div id="gif-sheet-grid" class="gif-keyboard-grid">
+                            <div class="gif-loading-state"><i class="fas fa-spinner fa-spin"></i> Loading GIFs...</div>
+                        </div>
                     </div>
                 </div>
 
@@ -511,6 +520,42 @@
                 </div>
             </div>
         </main>
+    </div>
+
+    <!-- Public Video Call Pre-Join Live Status Sheet (No PIN / No Username Needed) -->
+    <div id="public-preview-modal" class="group-modal hidden">
+        <div class="modal-card public-preview-card">
+            <div class="modal-header-row">
+                <div class="panel-badge" style="background: rgba(244, 63, 94, 0.14); color: #fb7185; border-color: rgba(244, 63, 94, 0.35);">
+                    <i class="fas fa-broadcast-tower"></i> Public Live Call
+                </div>
+                <button id="close-public-preview-btn" class="icon-close-btn" title="Close">&times;</button>
+            </div>
+
+            <div class="public-status-hero">
+                <div class="public-count-circle" id="preview-live-count-ring">
+                    <span id="preview-live-count-num">0</span>
+                </div>
+                <h3 id="preview-live-headline">0 People in Public Call</h3>
+                <p id="preview-live-subtext" class="modal-sub">Room is open right now. No password or username required.</p>
+                <div class="public-breakdown-pills">
+                    <span class="breakdown-pill"><i class="fas fa-video"></i> <span id="preview-cam-count">0</span> Cameras On</span>
+                    <span class="breakdown-pill"><i class="fas fa-microphone"></i> <span id="preview-mic-count">0</span> Voice Active</span>
+                </div>
+            </div>
+
+            <div class="public-join-options">
+                <button id="btn-public-enter-voice" class="primary-btn public-live-hero-btn full-width">
+                    <i class="fas fa-microphone"></i> Join & Talk (Camera Off)
+                </button>
+                <button id="btn-public-enter-video" class="primary-btn full-width" style="background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);">
+                    <i class="fas fa-video"></i> Join With Camera & Voice
+                </button>
+                <button id="btn-public-enter-listen" class="secondary-btn full-width">
+                    <i class="fas fa-headphones"></i> Just Watch, Listen & Chat
+                </button>
+            </div>
+        </div>
     </div>
 
     <!-- Disappearing Media Pop-up Overlay -->
@@ -565,11 +610,11 @@
             <div class="quick-gif-section">
                 <span class="quick-label">QUICK REACTIONS:</span>
                 <div class="quick-gif-pills">
-                    <button type="button" class="gif-pill" data-url="https://media.giphy.com/media/ICOgUNjpvO0PC/giphy.gif">🐱 Cat</button>
+                    <button type="button" class="gif-pill" data-url="https://media.giphy.com/media/MDJ9IbxxvDUQM/giphy.gif">🐱 Cat</button>
                     <button type="button" class="gif-pill" data-url="https://media.giphy.com/media/3o7TKMt1VVNkHV2PaE/giphy.gif">😂 Haha</button>
-                    <button type="button" class="gif-pill" data-url="https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif">🔥 Fire</button>
-                    <button type="button" class="gif-pill" data-url="https://media.giphy.com/media/26AHONQ99JaQnJaPU/giphy.gif">🎉 Party</button>
-                    <button type="button" class="gif-pill" data-url="https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif">👋 Wave</button>
+                    <button type="button" class="gif-pill" data-url="https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif">🔥 Party</button>
+                    <button type="button" class="gif-pill" data-url="https://media.giphy.com/media/BPJmthQ3YRwD6QqcVD/giphy.gif">🥂 Cheers</button>
+                    <button type="button" class="gif-pill" data-url="https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif">👋 Wave</button>
                 </div>
             </div>
 
@@ -584,7 +629,7 @@
 
     <!-- Load Socket.IO client library -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="script.js?v=4.6"></script>
+    <script src="script.js?v=5.1"></script>
 </body>
 
 </html>
