@@ -762,6 +762,52 @@ main {
     }
 }
 
+.public-live-hero-btn {
+    background: linear-gradient(135deg, #f43f5e 0%, #fb923c 100%) !important;
+    box-shadow: 0 10px 25px -5px rgba(244, 63, 94, 0.45) !important;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    position: relative;
+}
+
+.public-live-hero-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 15px 30px -5px rgba(244, 63, 94, 0.65) !important;
+}
+
+.live-btn-count-pill {
+    background: rgba(0, 0, 0, 0.28);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    color: #ffffff;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.15rem 0.55rem;
+    border-radius: 50px;
+    letter-spacing: 0.3px;
+}
+
+.live-share-pill-btn {
+    background: rgba(56, 189, 248, 0.2);
+    border: 1px solid rgba(56, 189, 248, 0.45);
+    color: #7dd3fc;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.3rem 0.65rem;
+    border-radius: 50px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    transition: all 0.2s ease;
+}
+
+.live-share-pill-btn:hover {
+    background: rgba(56, 189, 248, 0.35);
+    color: #ffffff;
+}
+
 .group-hero-btn {
     background: linear-gradient(135deg, #818cf8 0%, #c084fc 100%) !important;
     box-shadow: 0 10px 25px -5px rgba(129, 140, 248, 0.4) !important;
@@ -1265,11 +1311,19 @@ main {
     grid-column: span 2;
 }
 
-/* 4+ Participants: 2x2 Grid */
-.live-grid.layout-4,
-.live-grid.layout-more {
+/* 4 Participants: 2x2 Grid */
+.live-grid.layout-4 {
     grid-template-columns: 1fr 1fr;
     grid-template-rows: 1fr 1fr;
+}
+
+/* 5+ Participants (Public Live): Scrollable 2-column grid */
+.live-grid.layout-more {
+    grid-template-columns: 1fr 1fr;
+    grid-auto-rows: minmax(220px, 1fr);
+    overflow-y: auto;
+    height: 100%;
+    padding-bottom: 85px;
 }
 
 /* Participant Card in Live Stage */

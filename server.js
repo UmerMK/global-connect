@@ -70,9 +70,16 @@ app.get('/api/gifs/search', async (req, res) => {
 
 let waitingUsers = [];
 let onlineCount = 0;
+const PUBLIC_LIVE_PIN = '__public_live__';
 
 const broadcastOnlineCount = () => {
     io.emit('online_count', onlineCount);
+};
+
+const broadcastPublicLiveCount = () => {
+    const publicRoom = io.sockets.adapter.rooms.get(`group_${PUBLIC_LIVE_PIN}`);
+    const count = publicRoom ? publicRoom.size : 0;
+    io.emit('public_live_count', count);
 };
 
 // Helper to safely remove a socket from a group and notify peers
@@ -90,12 +97,18 @@ function handleLeaveGroup(socket) {
     socket.isGroupOwner = null;
     socket.isCameraOn = null;
     socket.isAudioMuted = null;
+
+    if (pin === PUBLIC_LIVE_PIN) {
+        broadcastPublicLiveCount();
+    }
 }
 
 io.on('connection', (socket) => {
     onlineCount++;
     console.log(`User ${socket.id} connected. Total online: ${onlineCount}`);
     broadcastOnlineCount();
+    const initPublicRoom = io.sockets.adapter.rooms.get(`group_${PUBLIC_LIVE_PIN}`);
+    socket.emit('public_live_count', initPublicRoom ? initPublicRoom.size : 0);
 
     // ==========================================
     // 1. RANDOM VOICE / PRIVATE CHAT (PRESERVED)
@@ -181,6 +194,9 @@ io.on('connection', (socket) => {
     // Create group with PIN and optional Name
     socket.on('group_create', ({ pin, name }, callback) => {
         try {
+            if (pin && String(pin).trim().toLowerCase() === PUBLIC_LIVE_PIN) {
+                throw new Error('Reserved PIN.');
+            }
             const newGroup = groupsManager.createGroup(pin, name);
             console.log(`[Group] Created/Accessed room PIN "${newGroup.pin}" (${newGroup.name})`);
             if (typeof callback === 'function') {
@@ -191,6 +207,91 @@ io.on('connection', (socket) => {
                 callback({ success: false, error: err.message });
             }
         }
+    });
+
+    // Public Video Call (Open Live — No password, no username required)
+    socket.on('public_live_join', ({ avatarUrl, displayName, isAudioMuted } = {}, callback) => {
+        const socketRoom = `group_${PUBLIC_LIVE_PIN}`;
+
+        // Leave random 1-on-1 waiting or active room
+        waitingUsers = waitingUsers.filter(u => u.id !== socket.id);
+        if (socket.roomId || socket.peerId) {
+            if (socket.peerId) {
+                const partner = io.sockets.sockets.get(socket.peerId);
+                if (partner) {
+                    partner.emit('partner_disconnected');
+                    partner.peerId = null;
+                    partner.roomId = null;
+                }
+            }
+            if (socket.roomId) socket.leave(socket.roomId);
+            socket.peerId = null;
+            socket.roomId = null;
+        }
+
+        // Leave any previous group room
+        if (socket.groupPin && socket.groupPin !== PUBLIC_LIVE_PIN) {
+            handleLeaveGroup(socket);
+        }
+
+        const memberId = socket.id;
+        const cleanName = (displayName && String(displayName).trim().slice(0, 30)) || `Live #${socket.id.slice(0, 4).toUpperCase()}`;
+        const cleanAvatar = avatarUrl || null;
+
+        socket.groupPin = PUBLIC_LIVE_PIN;
+        socket.groupName = 'Public Video Call';
+        socket.memberId = memberId;
+        socket.displayName = cleanName;
+        socket.userAvatar = cleanAvatar;
+        socket.isGroupOwner = false;
+        socket.isCameraOn = false;
+        socket.isAudioMuted = !!isAudioMuted;
+
+        socket.join(socketRoom);
+        console.log(`[PublicLive] User ${socket.id} (${cleanName}) joined Public Video Call`);
+
+        // Gather existing members in the public live room
+        const roomSockets = io.sockets.adapter.rooms.get(socketRoom) || new Set();
+        const existingMembers = [];
+        for (const sId of roomSockets) {
+            if (sId !== socket.id) {
+                const s = io.sockets.sockets.get(sId);
+                if (s && s.groupPin === PUBLIC_LIVE_PIN) {
+                    existingMembers.push({
+                        memberId: s.memberId,
+                        displayName: s.displayName,
+                        avatarUrl: s.userAvatar,
+                        isOwner: false,
+                        isCameraOn: !!s.isCameraOn,
+                        isAudioMuted: !!s.isAudioMuted
+                    });
+                }
+            }
+        }
+
+        if (typeof callback === 'function') {
+            callback({
+                success: true,
+                isPublic: true,
+                group: { pin: PUBLIC_LIVE_PIN, name: 'Public Video Call' },
+                isOwner: false,
+                memberId: memberId,
+                displayName: cleanName,
+                avatarUrl: cleanAvatar,
+                existingMembers: existingMembers
+            });
+        }
+
+        socket.to(socketRoom).emit('group_member_joined', {
+            memberId: memberId,
+            displayName: cleanName,
+            avatarUrl: cleanAvatar,
+            isOwner: false,
+            isCameraOn: false,
+            isAudioMuted: !!isAudioMuted
+        });
+
+        broadcastPublicLiveCount();
     });
 
     // Join room with PIN and Display Name (no group name needed!)
@@ -378,6 +479,10 @@ io.on('connection', (socket) => {
     // Delete group (owner only)
     socket.on('group_delete', ({ pin, name, ownerToken }, callback) => {
         const targetPin = pin || socket.groupPin;
+        if (targetPin === PUBLIC_LIVE_PIN) {
+            if (typeof callback === 'function') callback({ success: false, error: 'Public live room cannot be deleted.' });
+            return;
+        }
         const result = groupsManager.deleteGroup(targetPin, ownerToken);
         if (result.success) {
             console.log(`[Group] Room PIN "${targetPin}" permanently deleted by owner.`);

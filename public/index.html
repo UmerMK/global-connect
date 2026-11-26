@@ -83,6 +83,10 @@
                         <button id="start-btn" class="primary-btn pulse">
                             Start Talking Now <i class="fas fa-play"></i>
                         </button>
+                        <button id="public-live-btn" class="primary-btn public-live-hero-btn">
+                            <i class="fas fa-broadcast-tower"></i> Public Video Call
+                            <span id="public-live-badge" class="live-btn-count-pill">Open</span>
+                        </button>
                         <button id="group-lobby-btn" class="primary-btn group-hero-btn">
                             <i class="fas fa-users"></i> Group Chat (Friends)
                         </button>
@@ -379,10 +383,13 @@
                         <span class="live-pill-badge"><i class="fas fa-satellite-dish pulse-icon"></i> LIVE</span>
                         <div class="live-title-box">
                             <h3 id="room-group-name">Group Room</h3>
-                            <span class="live-pin-chip" title="Room PIN"><i class="fas fa-lock"></i> PIN: <strong id="room-pin-display">1234</strong></span>
+                            <span id="room-pin-chip" class="live-pin-chip" title="Room Access"><i class="fas fa-lock"></i> PIN: <strong id="room-pin-display">1234</strong></span>
                         </div>
                     </div>
                     <div class="live-header-right">
+                        <button id="btn-copy-live-link" class="live-share-pill-btn hidden" title="Copy Public Live Link">
+                            <i class="fas fa-share-alt"></i> Share
+                        </button>
                         <div class="live-viewers-chip" title="Connected in Room">
                             <i class="fas fa-user-friends"></i>
                             <span id="group-online-count">1</span>
@@ -390,7 +397,7 @@
                         <button id="btn-delete-group" class="danger-btn-mini hidden" title="Delete Group (Owner Only)">
                             <i class="fas fa-trash-alt"></i> Delete
                         </button>
-                        <button id="btn-leave-group" class="live-leave-pill-btn" title="Leave Group">
+                        <button id="btn-leave-group" class="live-leave-pill-btn" title="Leave Room">
                             <i class="fas fa-sign-out-alt"></i> Leave
                         </button>
                     </div>
@@ -577,7 +584,7 @@
 
     <!-- Load Socket.IO client library -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="script.js?v=4.5"></script>
+    <script src="script.js?v=4.6"></script>
 </body>
 
 </html>

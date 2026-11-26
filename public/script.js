@@ -988,7 +988,8 @@ let groupQueuedCandidates = new Map(); // memberId -> Array of candidate objects
 let groupAudioStream = null;
 let groupVideoStream = null;
 let isGroupAudioMuted = false;
-let isGroupCameraOn = false;
+let isLocalCameraOn = false;
+let isPublicRoomMode = false;
 let currentGroupPin = null;
 let currentGroupName = null;
 let myGroupMemberId = null;
@@ -999,8 +1000,12 @@ let groupAudioContext = null;
 let selectedMediaDataUrl = null;
 let mediaCountdownTimer = null;
 
-// DOM Elements - Group Lobby
+// DOM Elements - Public Live & Group Lobby
+const publicLiveBtn = document.getElementById('public-live-btn');
+const publicLiveBadge = document.getElementById('public-live-badge');
 const groupLobbyBtn = document.getElementById('group-lobby-btn');
+const roomPinChip = document.getElementById('room-pin-chip');
+const btnCopyLiveLink = document.getElementById('btn-copy-live-link');
 const groupBackHomeBtn = document.getElementById('group-back-home-btn');
 const panelCreateGroup = document.getElementById('panel-create-group');
 const panelJoinGroup = document.getElementById('panel-join-group');
@@ -1086,8 +1091,103 @@ const mediaProgressFill = document.getElementById('media-progress-fill');
 const closeMediaPopupBtn = document.getElementById('close-media-popup-btn');
 
 // ==========================================
-// 1. NAVIGATION & SWITCHING (JOIN IS DEFAULT)
+// 1. NAVIGATION & SWITCHING (PUBLIC LIVE & PIN JOIN)
 // ==========================================
+let lastPublicLiveCount = 0;
+
+function renderPublicLiveBadge(count) {
+    lastPublicLiveCount = count;
+    const badge = document.getElementById('public-live-badge');
+    if (!badge) return;
+    badge.innerText = count > 0 ? `${count} Live` : 'Open';
+}
+
+socket.on('public_live_count', (count) => {
+    renderPublicLiveBadge(count);
+});
+
+if (publicLiveBtn) {
+    publicLiveBtn.addEventListener('click', handleJoinPublicLive);
+}
+
+if (btnCopyLiveLink) {
+    btnCopyLiveLink.addEventListener('click', async () => {
+        const shareUrl = `${window.location.origin}/?live=public`;
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(shareUrl);
+            } else {
+                const tempInput = document.createElement('input');
+                tempInput.value = shareUrl;
+                document.body.appendChild(tempInput);
+                tempInput.select();
+                document.execCommand('copy');
+                tempInput.remove();
+            }
+            btnCopyLiveLink.innerHTML = '<i class="fas fa-check"></i> Copied!';
+            setTimeout(() => {
+                if (btnCopyLiveLink) btnCopyLiveLink.innerHTML = '<i class="fas fa-share-alt"></i> Share';
+            }, 2000);
+        } catch (e) {
+            prompt('Copy this Public Video Call link:', shareUrl);
+        }
+    });
+}
+
+function handleJoinPublicLive() {
+    if (!myLocalFunnyAvatar) {
+        myLocalFunnyAvatar = getRandomFunnyAvatar();
+    }
+
+    if (publicLiveBtn) {
+        publicLiveBtn.disabled = true;
+        publicLiveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Entering Public Live...';
+    }
+
+    socket.emit('public_live_join', { avatarUrl: myLocalFunnyAvatar }, async (response) => {
+        if (publicLiveBtn) {
+            publicLiveBtn.disabled = false;
+            publicLiveBtn.innerHTML = '<i class="fas fa-broadcast-tower"></i> Public Video Call <span id="public-live-badge" class="live-btn-count-pill">Open</span>';
+            renderPublicLiveBadge(lastPublicLiveCount);
+        }
+
+        if (!response || !response.success) {
+            alert((response && response.error) || 'Could not enter Public Video Call. Please try again.');
+            return;
+        }
+
+        isPublicRoomMode = true;
+        currentGroupPin = response.group.pin;
+        currentGroupName = response.group.name || 'Public Video Call';
+        myGroupMemberId = response.memberId;
+        isCurrentGroupOwner = false;
+
+        userAvatarsMap.set(myGroupMemberId, myLocalFunnyAvatar);
+
+        // Update Top Live Header for Public Mode (No PIN, Open to All)
+        if (roomGroupName) roomGroupName.innerText = 'Public Video Call';
+        if (roomPinChip) {
+            roomPinChip.innerHTML = '<i class="fas fa-globe"></i> Open to All';
+        }
+        if (btnCopyLiveLink) btnCopyLiveLink.classList.remove('hidden');
+        if (btnDeleteGroup) btnDeleteGroup.classList.add('hidden');
+
+        localDisplayName.innerText = `${response.displayName} (You)`;
+        localAvatarImg.src = myLocalFunnyAvatar;
+
+        if (liveOverlayStream) {
+            liveOverlayStream.innerHTML = `
+                <div class="live-stream-welcome-bubble">
+                    <i class="fas fa-globe"></i> Welcome to Public Video Call! Talk, listen, turn on camera, or chat with GIFs freely.
+                </div>
+            `;
+        }
+
+        showScreen('group-room-screen');
+        await initGroupVoiceRoom(response.existingMembers, { allowListenOnly: true });
+    });
+}
+
 if (groupLobbyBtn) {
     groupLobbyBtn.addEventListener('click', () => {
         // Show Join Panel by default every time!
@@ -1213,6 +1313,7 @@ function enterGroupRoom(pin, displayName, ownerToken, onComplete) {
         }
 
         // Successfully joined group on server
+        isPublicRoomMode = false;
         currentGroupPin = response.group.pin;
         currentGroupName = response.group.name;
         myGroupMemberId = response.memberId;
@@ -1223,7 +1324,10 @@ function enterGroupRoom(pin, displayName, ownerToken, onComplete) {
 
         // Update UI Header
         if (roomGroupName) roomGroupName.innerText = currentGroupName;
-        if (roomPinDisplay) roomPinDisplay.innerText = currentGroupPin;
+        if (roomPinChip) {
+            roomPinChip.innerHTML = `<i class="fas fa-lock"></i> PIN: <strong id="room-pin-display">${escapeHtml(currentGroupPin)}</strong>`;
+        }
+        if (btnCopyLiveLink) btnCopyLiveLink.classList.add('hidden');
         localDisplayName.innerText = `${response.displayName}${response.isOwner ? ' (Host)' : ''}`;
         localAvatarImg.src = myLocalFunnyAvatar;
 
@@ -1263,11 +1367,11 @@ function showFormError(element, message) {
 // ==========================================
 // 4. GROUP VOICE & MULTI-PEER WEBRTC ENGINE
 // ==========================================
-async function initGroupVoiceRoom(existingMembers) {
+async function initGroupVoiceRoom(existingMembers, options = {}) {
     console.log('[Group] Initializing Voice Room with existing members:', existingMembers);
     cleanupGroupMedia();
 
-    // 1. Request microphone access for group voice
+    // 1. Request microphone access (supports listen-only fallback if user only wants to watch/listen/chat)
     try {
         groupAudioStream = await navigator.mediaDevices.getUserMedia({
             audio: {
@@ -1279,8 +1383,27 @@ async function initGroupVoiceRoom(existingMembers) {
         console.log('[Group] Microphone access granted.');
         setupLocalSpeechDetection(groupAudioStream);
     } catch (err) {
-        console.error('[Group] Microphone error:', err);
-        alert('Could not access microphone. You can listen, but other participants cannot hear you.');
+        console.warn('[Group] Microphone not active (Listen-Only mode):', err);
+        groupAudioStream = null;
+        isGroupAudioMuted = true;
+        if (groupMicBtn) {
+            groupMicBtn.classList.add('muted');
+            const micIcon = groupMicBtn.querySelector('i');
+            if (micIcon) micIcon.className = 'fas fa-microphone-slash';
+        }
+        if (localMicIndicator) {
+            localMicIndicator.className = 'media-badge mic-muted';
+            localMicIndicator.innerHTML = '<i class="fas fa-microphone-slash"></i>';
+        }
+        socket.emit('group_media_state', { isAudioMuted: true, isCameraOn: false });
+        if (options.allowListenOnly && liveOverlayStream) {
+            const note = document.createElement('div');
+            note.className = 'live-stream-welcome-bubble';
+            note.innerHTML = '<i class="fas fa-headphones"></i> Listening & Chat active. Tap the mic button anytime to speak!';
+            liveOverlayStream.appendChild(note);
+        } else if (!options.allowListenOnly) {
+            alert('Could not access microphone. You can listen and chat, or tap mic to retry.');
+        }
     }
 
     // 2. Establish WebRTC connection with all existing members in room
@@ -1290,12 +1413,22 @@ async function initGroupVoiceRoom(existingMembers) {
             const stableAvatar = getStableAvatarForUser(member.memberId, member.avatarUrl);
             createRemoteParticipantCard(member.memberId, member.displayName, member.isOwner, stableAvatar);
             const peer = await createGroupPeerConnection(member.memberId, member.displayName, true, member.isCameraOn);
-            if (peer && member.isCameraOn) {
-                peer.isCameraOn = true;
-                const camBadge = document.getElementById(`cam-badge-${member.memberId}`);
-                if (camBadge) {
-                    camBadge.className = 'media-badge cam-on';
-                    camBadge.innerHTML = '<i class="fas fa-video"></i>';
+            if (peer) {
+                if (member.isCameraOn) {
+                    peer.isCameraOn = true;
+                    const camBadge = document.getElementById(`cam-badge-${member.memberId}`);
+                    if (camBadge) {
+                        camBadge.className = 'media-badge cam-on';
+                        camBadge.innerHTML = '<i class="fas fa-video"></i>';
+                    }
+                }
+                if (member.isAudioMuted) {
+                    peer.isAudioMuted = true;
+                    const micBadge = document.getElementById(`mic-badge-${member.memberId}`);
+                    if (micBadge) {
+                        micBadge.className = 'media-badge mic-muted';
+                        micBadge.innerHTML = '<i class="fas fa-microphone-slash"></i>';
+                    }
                 }
             }
         }
@@ -1343,11 +1476,15 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
 
     groupPeers.set(targetMemberId, peerData);
 
-    // Add local audio tracks if available
-    if (groupAudioStream) {
+    // Add local audio tracks if available; otherwise add 'recvonly' audio transceiver so listeners still receive audio!
+    if (groupAudioStream && groupAudioStream.getAudioTracks()[0]) {
         const audioTrack = groupAudioStream.getAudioTracks()[0];
-        if (audioTrack) {
-            pc.addTrack(audioTrack, groupAudioStream);
+        pc.addTrack(audioTrack, groupAudioStream);
+    } else {
+        try {
+            pc.addTransceiver('audio', { direction: 'recvonly' });
+        } catch (e) {
+            console.warn('[Group] audio recvonly transceiver note:', e);
         }
     }
 
@@ -1770,10 +1907,66 @@ if (groupMicBtn) {
     groupMicBtn.addEventListener('click', toggleGroupMic);
 }
 
-function toggleGroupMic() {
-    isGroupAudioMuted = !isGroupAudioMuted;
+// Mobile audio autoplay unlock on any tap inside the live room
+const groupRoomScreenEl = document.getElementById('group-room-screen');
+if (groupRoomScreenEl) {
+    groupRoomScreenEl.addEventListener('click', () => {
+        if (groupAudioContext && groupAudioContext.state === 'suspended') {
+            groupAudioContext.resume().catch(() => {});
+        }
+        document.querySelectorAll('audio[id^="remote-audio-"]').forEach(el => {
+            if (el.paused && el.srcObject) el.play().catch(() => {});
+        });
+    }, { passive: true });
+}
 
-    if (groupAudioStream) {
+async function toggleGroupMic() {
+    // If joined in Listen-Only mode, request mic now and upgrade peers
+    if (!groupAudioStream) {
+        try {
+            groupAudioStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                }
+            });
+            isGroupAudioMuted = false;
+            setupLocalSpeechDetection(groupAudioStream);
+            const audioTrack = groupAudioStream.getAudioTracks()[0];
+
+            for (const [peerId, peer] of groupPeers.entries()) {
+                const pc = peer.pc;
+                if (!pc) continue;
+                const transceiver = pc.getTransceivers().find(t =>
+                    (t.sender && t.sender.track && t.sender.track.kind === 'audio') ||
+                    (t.receiver && t.receiver.track && t.receiver.track.kind === 'audio')
+                );
+                if (transceiver) {
+                    transceiver.direction = 'sendrecv';
+                }
+                const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio') ||
+                               (transceiver && transceiver.sender);
+                if (sender) {
+                    await sender.replaceTrack(audioTrack);
+                } else {
+                    pc.addTrack(audioTrack, groupAudioStream);
+                }
+                try {
+                    const offer = await pc.createOffer();
+                    await pc.setLocalDescription(offer);
+                    socket.emit('group_signal', { to: peerId, data: { offer } });
+                } catch (e) {
+                    console.warn('[Mic] Renegotiation note:', e);
+                }
+            }
+        } catch (err) {
+            console.warn('[Mic] Could not enable microphone:', err);
+            alert('Please allow microphone access in your browser settings to speak.');
+            return;
+        }
+    } else {
+        isGroupAudioMuted = !isGroupAudioMuted;
         groupAudioStream.getAudioTracks().forEach(track => {
             track.enabled = !isGroupAudioMuted;
         });
@@ -1943,8 +2136,10 @@ function updateLiveGridLayout() {
         groupParticipantsGrid.className = 'live-grid layout-2';
     } else if (totalCards === 3) {
         groupParticipantsGrid.className = 'live-grid layout-3';
-    } else {
+    } else if (totalCards === 4) {
         groupParticipantsGrid.className = 'live-grid layout-4';
+    } else {
+        groupParticipantsGrid.className = 'live-grid layout-more';
     }
 }
 
@@ -1955,22 +2150,19 @@ if (btnLeaveGroup) btnLeaveGroup.addEventListener('click', leaveGroupRoom);
 if (groupLeaveControlBtn) groupLeaveControlBtn.addEventListener('click', leaveGroupRoom);
 
 function leaveGroupRoom() {
-    console.log('[Group] Leaving group room...');
+    console.log('[Group] Leaving room...');
+    const wasPublic = isPublicRoomMode;
     cleanupGroupMedia();
     socket.emit('group_leave');
 
-    // Clean up remote cards
-    for (const memberId of groupPeers.keys()) {
-        removeRemoteParticipant(memberId);
-    }
-
-    currentGroupKey = null;
     currentGroupName = null;
     currentGroupPin = null;
     myGroupMemberId = null;
     isCurrentGroupOwner = false;
+    isPublicRoomMode = false;
+    if (btnCopyLiveLink) btnCopyLiveLink.classList.add('hidden');
 
-    showScreen('group-lobby-screen');
+    showScreen(wasPublic ? 'start-screen' : 'group-lobby-screen');
 }
 
 if (btnDeleteGroup) {
@@ -2060,6 +2252,13 @@ function cleanupGroupMedia() {
     groupPeers.clear();
     groupPendingConnections.clear();
     groupQueuedCandidates.clear();
+    groupMemberNames.clear();
+
+    // Remove all remote participant cards from DOM cleanly
+    if (groupParticipantsGrid) {
+        groupParticipantsGrid.querySelectorAll('.participant-card:not(#card-local)').forEach(c => c.remove());
+        updateLiveGridLayout();
+    }
 }
 
 
@@ -2548,3 +2747,19 @@ function selectAndSendGif(gifUrl) {
     socket.emit('group_chat_message', { gifUrl: gifUrl });
     closeGifDrawer();
 }
+
+// Auto-enter Public Video Call if opened via direct ?live=public link
+(function checkDirectPublicLink() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('live') === 'public') {
+            if (socket.connected) {
+                handleJoinPublicLive();
+            } else {
+                socket.once('connect', () => {
+                    handleJoinPublicLive();
+                });
+            }
+        }
+    } catch (e) {}
+})();
