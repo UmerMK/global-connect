@@ -517,6 +517,16 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('private_voice_note', ({ audioData, duration, mimeType } = {}) => {
+        if (!socket.roomId || !audioData || typeof audioData !== 'string') return;
+        if (!audioData.startsWith('data:audio/') || audioData.length > 1_500_000) return;
+        socket.to(socket.roomId).emit('private_voice_note', {
+            audioData,
+            mimeType: String(mimeType || 'audio/webm').slice(0, 50),
+            duration: Math.min(60, Math.max(1, Math.round(Number(duration) || 1)))
+        });
+    });
+
     socket.on('typing', () => {
         if (socket.roomId) socket.to(socket.roomId).emit('typing');
     });
@@ -822,9 +832,10 @@ io.on('connection', (socket) => {
         });
     });
 
-    // Live transparent chat stream (TikTok live style messages & GIFs)
-    socket.on('group_chat_message', ({ text, gifUrl }, callback) => {
+    // Live transparent chat stream (TikTok live style messages, GIFs & voice notes)
+    socket.on('group_chat_message', ({ text, gifUrl, voiceData, voiceDuration, voiceMime }, callback) => {
         if (!socket.groupPin) return;
+        const hasValidVoice = typeof voiceData === 'string' && voiceData.startsWith('data:audio/') && voiceData.length <= 1_500_000;
         const socketRoom = `group_${socket.groupPin}`;
         const payload = {
             id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
@@ -833,6 +844,9 @@ io.on('connection', (socket) => {
             senderAvatar: socket.userAvatar || null,
             text: text ? String(text).slice(0, 200) : '',
             gifUrl: gifUrl || null,
+            voiceData: hasValidVoice ? voiceData : null,
+            voiceDuration: hasValidVoice ? Math.min(60, Math.max(1, Math.round(Number(voiceDuration) || 1))) : null,
+            voiceMime: hasValidVoice ? String(voiceMime || 'audio/webm').slice(0, 50) : null,
             timestamp: Date.now()
         };
         io.to(socketRoom).emit('group_chat_message', payload);

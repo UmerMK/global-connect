@@ -1,0 +1,18 @@
+{
+  "name": "Global Connect — Live Video & Voice",
+  "short_name": "Global Connect",
+  "description": "Free data-smart video, voice & live rooms for friends and students worldwide.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#06070d",
+  "theme_color": "#06070d",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

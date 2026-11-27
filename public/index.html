@@ -5,11 +5,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Global Connect | Talk to People & Friends</title>
+    <meta name="theme-color" content="#06070d">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="/icon.svg">
+    <link rel="apple-touch-icon" href="/icon.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=8.1">
+    <link rel="stylesheet" href="style.css?v=8.2">
     <style>
         .visualizer-pair {
             display: flex;
@@ -58,6 +64,9 @@
 </head>
 
 <body>
+    <div id="network-reconnect-banner" class="network-reconnect-banner hidden">
+        <i class="fas fa-sync fa-spin"></i> <span id="network-reconnect-text">Switching network… Reconnecting call</span>
+    </div>
 
     <div class="container" id="main-container">
         <header id="app-header">
@@ -99,6 +108,9 @@
                             <span class="cta-chip">4-Digit PIN</span>
                         </button>
                         <button id="how-it-works-btn" class="secondary-btn">How it works</button>
+                        <button id="pwa-install-btn" class="secondary-btn pwa-install-btn hidden">
+                            <i class="fas fa-mobile-alt"></i> Install App on Phone
+                        </button>
                     </div>
 
                     <div id="online-counter" class="online-badge">
@@ -241,9 +253,6 @@
                         <button id="private-quality-btn" class="icon-btn quality-pill-btn" title="Video Quality & Data Saver">
                             <i class="fas fa-sliders-h"></i> <span id="private-quality-badge" class="q-badge-text">AUTO</span>
                         </button>
-                        <button id="private-share-screen-btn" class="icon-btn cam-toggle-btn hidden" title="Share Screen">
-                            <i class="fas fa-desktop"></i>
-                        </button>
                         <button id="private-flip-cam-btn" class="icon-btn cam-toggle-btn flip-trigger hidden" title="Switch Front / Back Camera">
                             <i class="fas fa-sync-alt"></i>
                         </button>
@@ -312,17 +321,50 @@
                     <button type="button" class="react-chip-btn" data-emoji="🤯">🤯</button>
                 </div>
 
-                <div class="input-bar">
-                    <button id="private-react-btn" class="icon-btn private-react-btn" title="Send Live Reaction">
-                        <span>😍</span>
-                    </button>
-                    <button id="private-gif-btn" class="icon-btn private-gif-btn" title="Search & Send GIFs">
+                <!-- Organized Studio Tool Tray (1-on-1) -->
+                <div id="private-tools-tray" class="studio-tools-tray hidden">
+                    <button type="button" id="private-gif-btn" class="studio-tool-chip" title="Search & Send GIFs">
                         <span class="gif-btn-text-xs">GIF</span>
+                        <span>GIFs</span>
                     </button>
-                    <input type="text" id="message-input" class="glass-input" placeholder="Drop a message..."
+                    <button type="button" id="private-react-btn" class="studio-tool-chip" title="Send Live Reaction">
+                        <span>😍</span>
+                        <span>React</span>
+                    </button>
+                    <button type="button" id="private-share-screen-btn" class="studio-tool-chip hidden" title="Share Screen">
+                        <i class="fas fa-desktop"></i>
+                        <span>Screen</span>
+                    </button>
+                </div>
+
+                <!-- Voice Recording Live Bar (1-on-1) -->
+                <div id="private-voice-recording-bar" class="voice-recording-bar hidden">
+                    <div class="voice-rec-status">
+                        <span class="voice-rec-dot"></span>
+                        <span id="private-voice-rec-timer" class="voice-rec-timer">0:00</span>
+                        <span class="voice-rec-hint">Recording voice note…</span>
+                    </div>
+                    <div class="voice-rec-actions">
+                        <button type="button" id="private-voice-cancel-btn" class="voice-rec-cancel-btn" title="Cancel">
+                            <i class="fas fa-times"></i>
+                        </button>
+                        <button type="button" id="private-voice-send-btn" class="voice-rec-send-btn" title="Send Voice Note">
+                            <i class="fas fa-paper-plane"></i> Send
+                        </button>
+                    </div>
+                </div>
+
+                <div class="input-bar">
+                    <button type="button" id="private-plus-btn" class="icon-btn studio-plus-btn" title="GIFs, Reactions & Tools">
+                        <i class="fas fa-plus"></i>
+                    </button>
+                    <input type="text" id="message-input" class="glass-input" placeholder="Message or voice note..."
                         autocomplete="off" maxlength="200">
                     <span id="char-counter" class="char-counter">0/200</span>
-                    <button id="send-btn" class="icon-btn send" title="Send">
+                    <button type="button" id="private-voice-btn" class="icon-btn voice-note-trigger" title="Record Voice Note">
+                        <i class="fas fa-microphone"></i>
+                    </button>
+                    <button id="send-btn" class="icon-btn send hidden" title="Send">
                         <i class="fas fa-paper-plane"></i>
                     </button>
                 </div>
@@ -508,21 +550,58 @@
                     <button type="button" class="react-chip-btn" data-emoji="🤯">🤯</button>
                 </div>
 
-                <!-- Bottom Floating Live Action Bar -->
+                <!-- Organized Studio Tool Tray (Group / Public Live) -->
+                <div id="group-tools-tray" class="studio-tools-tray hidden">
+                    <button type="button" id="btn-toggle-gif-drawer" class="studio-tool-chip" title="Search ALL GIFs">
+                        <span class="gif-btn-text-xs">GIF</span>
+                        <span>GIFs</span>
+                    </button>
+                    <button type="button" id="group-react-btn" class="studio-tool-chip" title="Send Live Reaction">
+                        <span>😍</span>
+                        <span>React</span>
+                    </button>
+                    <button type="button" id="group-share-media-btn" class="studio-tool-chip" title="Share Photo or File">
+                        <i class="fas fa-image"></i>
+                        <span>Photo</span>
+                    </button>
+                    <button type="button" id="group-share-screen-btn" class="studio-tool-chip hidden" title="Share Screen">
+                        <i class="fas fa-desktop"></i>
+                        <span>Screen</span>
+                    </button>
+                    <button type="button" id="group-leave-control-btn" class="studio-tool-chip is-danger" title="Leave Live Room">
+                        <i class="fas fa-phone-slash"></i>
+                        <span>Leave</span>
+                    </button>
+                </div>
+
+                <!-- Voice Recording Live Bar (Group / Public Live) -->
+                <div id="group-voice-recording-bar" class="voice-recording-bar hidden">
+                    <div class="voice-rec-status">
+                        <span class="voice-rec-dot"></span>
+                        <span id="group-voice-rec-timer" class="voice-rec-timer">0:00</span>
+                        <span class="voice-rec-hint">Recording voice note…</span>
+                    </div>
+                    <div class="voice-rec-actions">
+                        <button type="button" id="group-voice-cancel-btn" class="voice-rec-cancel-btn" title="Cancel">
+                            <i class="fas fa-times"></i>
+                        </button>
+                        <button type="button" id="group-voice-send-btn" class="voice-rec-send-btn" title="Send Voice Note">
+                            <i class="fas fa-paper-plane"></i> Send
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Bottom Floating Live Action Bar (Clean 5-Control Phone Layout) -->
                 <div class="live-action-bar">
                     <form id="live-chat-form" class="live-chat-input-pill" onsubmit="return false;">
-                        <input type="text" id="live-chat-input" placeholder="Say something in live..." autocomplete="off" maxlength="200">
+                        <input type="text" id="live-chat-input" placeholder="Chat in room..." autocomplete="off" maxlength="200">
                         <button type="submit" id="btn-send-live-chat" class="live-send-icon-btn" title="Send comment">
                             <i class="fas fa-paper-plane"></i>
                         </button>
                     </form>
 
-                    <button id="group-react-btn" class="live-circle-tool-btn react-trigger" title="Send Live Reaction">
-                        <span>😍</span>
-                    </button>
-
-                    <button id="btn-toggle-gif-drawer" class="live-circle-tool-btn gif-trigger" title="Search ALL GIFs">
-                        <span class="gif-btn-text">GIF</span>
+                    <button type="button" id="group-voice-btn" class="live-circle-tool-btn voice-note-trigger" title="Record Voice Note">
+                        <i class="fas fa-wave-square"></i>
                     </button>
 
                     <button id="group-mic-btn" class="live-circle-tool-btn mic-trigger" title="Toggle Microphone">
@@ -533,16 +612,8 @@
                         <i class="fas fa-video-slash"></i>
                     </button>
 
-                    <button id="group-share-screen-btn" class="live-circle-tool-btn screen-trigger hidden" title="Share Screen">
-                        <i class="fas fa-desktop"></i>
-                    </button>
-
-                    <button id="group-share-media-btn" class="live-circle-tool-btn upload-trigger" title="Share Photo or File">
-                        <i class="fas fa-image"></i>
-                    </button>
-
-                    <button id="group-leave-control-btn" class="live-circle-tool-btn leave-trigger" title="Leave Live Room">
-                        <i class="fas fa-phone-slash"></i>
+                    <button type="button" id="group-plus-btn" class="live-circle-tool-btn studio-plus-btn" title="GIFs, Reactions, Photo & More">
+                        <i class="fas fa-plus"></i>
                     </button>
                 </div>
             </div>
@@ -738,7 +809,7 @@
 
     <!-- Load Socket.IO client library -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="script.js?v=8.1"></script>
+    <script src="script.js?v=8.2"></script>
 </body>
 
 </html>

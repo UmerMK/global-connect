@@ -1,4 +1,4 @@
-console.log("CONNECTED_JS_VERSION: 8.1 - True Max-Ceiling Adaptive HD + Live Stats Control");
+console.log("CONNECTED_JS_VERSION: 8.2 - Voice Notes, Live MB Meter, PWA & Organized Phone UI");
 if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     alert("CRITICAL: You are using HTTP. WebRTC (Voice) requires HTTPS to work. Redirecting to Secure Site...");
     window.location.href = window.location.href.replace('http:', 'https:');
@@ -874,8 +874,12 @@ function endSession() {
     partnerRequestedQuality = null;
     isPrivateScreenSharing = false;
     if (privateShareScreenBtn) privateShareScreenBtn.classList.remove('screen-active');
-    const privateReactionDockEl = document.getElementById('private-reaction-dock');
-    if (privateReactionDockEl) privateReactionDockEl.classList.add('hidden');
+    const privateToolsTrayEl = document.getElementById('private-tools-tray');
+    if (privateToolsTrayEl) privateToolsTrayEl.classList.add('hidden');
+    const privatePlusBtnEl = document.getElementById('private-plus-btn');
+    if (privatePlusBtnEl) privatePlusBtnEl.classList.remove('open');
+    cancelActiveVoiceRecording('private');
+    hideNetworkReconnectBanner();
     isPrivateChatHidden = false;
     privateUnreadCount = 0;
     clearTimeout(privateToastTimer);
@@ -1057,6 +1061,7 @@ function sendMessage() {
         addMessage(text, 'sent');
         messageInput.value = '';
         charCounter.innerText = '0/200';
+        syncPrivateInputActionButton();
         messageInput.focus();
     }
 }
@@ -1188,12 +1193,14 @@ async function initWebRTC(isCaller) {
                 if (state === 'checking') {
                     callStatus.innerText = 'Connecting audio & video...';
                 } else if (state === 'connected' || state === 'completed') {
+                    hideNetworkReconnectBanner();
                     callStatus.innerText = localStream ? 'Connected - Speaking' : 'Connected - Listening';
                     if (isPartnerCameraOn && privateRemoteVideoStream) {
                         updatePrivateVideoStage();
                     }
                 } else if (state === 'failed' || state === 'disconnected') {
                     callStatus.innerText = 'Reconnecting...';
+                    showNetworkReconnectBanner('Network hiccup — reconnecting call...');
                 } else {
                     callStatus.innerText = 'Status: ' + state;
                 }
@@ -2223,6 +2230,7 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
             console.log(`[Group] ICE State with ${targetMemberId}: ${state}`);
             if (state === 'connected' || state === 'completed') {
                 setPeerIcePill(null);
+                hideNetworkReconnectBanner();
                 if (peerData.isCameraOn) {
                     applyGroupMediaStateToUi(targetMemberId, { isCameraOn: true });
                 }
@@ -2230,6 +2238,7 @@ async function createGroupPeerConnection(targetMemberId, targetDisplayName, isIn
                 setPeerIcePill('Connecting...');
             } else if (state === 'failed' || state === 'disconnected') {
                 setPeerIcePill('Reconnecting...');
+                showNetworkReconnectBanner('Switching network — reconnecting room...');
             }
         },
         onRequestRestart: async () => {
@@ -3091,6 +3100,12 @@ function cleanupGroupMedia() {
     peerRequestedQualities.clear();
     const grpReactionDockEl = document.getElementById('group-reaction-dock');
     if (grpReactionDockEl) grpReactionDockEl.classList.add('hidden');
+    const grpToolsTrayEl = document.getElementById('group-tools-tray');
+    if (grpToolsTrayEl) grpToolsTrayEl.classList.add('hidden');
+    const grpPlusBtnEl = document.getElementById('group-plus-btn');
+    if (grpPlusBtnEl) grpPlusBtnEl.classList.remove('open');
+    cancelActiveVoiceRecording('group');
+    hideNetworkReconnectBanner();
     closeGifDrawer();
     if (groupFlipCamBtn) {
         groupFlipCamBtn.classList.add('hidden');
@@ -3440,7 +3455,7 @@ function appendLiveChatMessage(msg) {
     if (!liveOverlayStream) return;
 
     const bubble = document.createElement('div');
-    bubble.className = 'live-chat-bubble';
+    bubble.className = msg.voiceData ? 'live-chat-bubble has-voice' : 'live-chat-bubble';
 
     // Stable identity avatar per sender
     const avatarSrc = getStableAvatarForUser(msg.senderId, msg.senderAvatar);
@@ -3461,11 +3476,23 @@ function appendLiveChatMessage(msg) {
         </div>
     `;
 
+    if (msg.voiceData) {
+        const contentBox = bubble.querySelector('.live-chat-content');
+        if (contentBox) {
+            contentBox.appendChild(createVoiceNotePlayer(msg.voiceData, msg.voiceDuration || 1));
+        }
+        // If someone is watching video with chat collapsed, softly unhide or notify so they can hear/play it
+        if (isLiveChatHidden && btnToggleLiveChat) {
+            btnToggleLiveChat.classList.add('has-unread-pulse');
+        }
+    }
+
     liveOverlayStream.appendChild(bubble);
 
-    // Keep memory tidy and performant
-    while (liveOverlayStream.children.length > 35) {
-        liveOverlayStream.removeChild(liveOverlayStream.children[0]);
+    // Trim oldest non-voice bubbles first so voice notes stay playable while in the room
+    while (liveOverlayStream.children.length > 40) {
+        const oldestNonVoice = Array.from(liveOverlayStream.children).find(el => !el.classList.contains('has-voice'));
+        liveOverlayStream.removeChild(oldestNonVoice || liveOverlayStream.children[0]);
     }
 
     liveOverlayStream.scrollTop = liveOverlayStream.scrollHeight;
@@ -3789,79 +3816,52 @@ function selectAndSendGif(gifUrl) {
 })();
 
 // =====================================================================
-// v8.1: TRUE MAX-CEILING VIDEO QUALITY + LIVE CONGESTION ADAPTATION
-//       + STUDENT DATA SAVER + SCREEN SHARE + LIVE REACTIONS
+// v8.2: TRUE CEILING VIDEO QUALITY (WEBSOCKET/WEBRTC GCC ADAPTIVE)
+//       NEVER ARTIFICIALLY LOCKED TO 360p — TRIES HARD FOR MAX HD/FHD
 // =====================================================================
-const QUALITY_TIER_ORDER = ['360p', '480p', '720p', '1080p'];
 const QUALITY_PRESETS = {
-    '360p': { key: '360p', badge: '360p', label: 'Data Saver (Max 360p)', width: 640, height: 360, fps: 18, maxBitrate: 320000, scaleDown: 2.0, degradation: 'balanced' },
-    '480p': { key: '480p', badge: '480p', label: 'Standard (Max 480p)', width: 854, height: 480, fps: 24, maxBitrate: 650000, scaleDown: 1.4, degradation: 'balanced' },
-    '720p': { key: '720p', badge: 'HD', label: 'HD (Max 720p)', width: 1280, height: 720, fps: 30, maxBitrate: 1500000, scaleDown: 1.0, degradation: 'balanced' },
-    '1080p': { key: '1080p', badge: 'FHD', label: 'Full HD (Max 1080p)', width: 1920, height: 1080, fps: 30, maxBitrate: 3000000, scaleDown: 1.0, degradation: 'balanced' }
+    '360p': { key: '360p', badge: '360p', label: 'Data Saver (Max 360p)', width: 640, height: 360, fps: 20, maxBitrate: 350000, scaleDown: 2.0, hardCap: true, degradation: 'balanced' },
+    '480p': { key: '480p', badge: '480p', label: 'Standard (Max 480p)', width: 854, height: 480, fps: 24, maxBitrate: 800000, scaleDown: 1.4, hardCap: true, degradation: 'balanced' },
+    '720p': { key: '720p', badge: 'HD', label: 'HD (Up to 720p)', width: 1280, height: 720, fps: 30, maxBitrate: 1800000, scaleDown: 1.0, hardCap: false, degradation: 'balanced' },
+    '1080p': { key: '1080p', badge: 'FHD', label: 'Full HD (Up to 1080p)', width: 1920, height: 1080, fps: 30, maxBitrate: 4000000, scaleDown: 1.0, hardCap: false, degradation: 'balanced' }
 };
-
-let liveNetworkTierKey = '1080p';
-let healthyProbeStreak = 0;
-
-function minQualityTier(a, b) {
-    const idxA = QUALITY_TIER_ORDER.indexOf(a);
-    const idxB = QUALITY_TIER_ORDER.indexOf(b);
-    if (idxA === -1) return QUALITY_PRESETS[b] ? b : '720p';
-    if (idxB === -1) return QUALITY_PRESETS[a] ? a : '720p';
-    return QUALITY_TIER_ORDER[Math.min(idxA, idxB)];
-}
 
 function getNetworkAutoSummary() {
     const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
     if (!conn) {
-        return { key: '720p', safetyCapKey: '1080p', networkLabel: 'Standard Connection • Up to 720p', isMobileData: false };
+        return { key: '1080p', networkLabel: 'Wi-Fi / Broadband • Auto Up to Full HD (1080p)', isMobileData: false };
     }
     const saveData = !!conn.saveData;
     const eff = String(conn.effectiveType || '').toLowerCase();
     const type = String(conn.type || '').toLowerCase();
     const downlink = Number(conn.downlink) || 0;
 
-    if (saveData || eff === 'slow-2g' || eff === '2g' || eff === '3g' || (downlink > 0 && downlink < 1.0)) {
-        return { key: '360p', safetyCapKey: '360p', networkLabel: 'Slow / Data Saver • Adapted to 360p', isMobileData: true };
+    if (saveData || eff === 'slow-2g' || eff === '2g' || eff === '3g') {
+        return { key: '360p', networkLabel: 'Mobile / Data Saver • Auto Max 360p', isMobileData: true };
     }
     if (type === 'cellular') {
-        const useLowCellular = downlink > 0 && downlink < 2.5;
         return {
-            key: useLowCellular ? '360p' : '480p',
-            safetyCapKey: useLowCellular ? '360p' : '480p',
-            networkLabel: `Mobile Data (Cellular) • Smart Cap ${useLowCellular ? '360p' : '480p'}`,
+            key: (downlink > 0 && downlink < 2.0) ? '360p' : '480p',
+            networkLabel: `Mobile Data (Cellular) • Auto Data Saver (${(downlink > 0 && downlink < 2.0) ? '360p' : '480p'})`,
             isMobileData: true
         };
     }
-    if (type === 'wifi' || type === 'ethernet') {
-        const useFhd = downlink >= 8 || type === 'ethernet';
-        return {
-            key: useFhd ? '1080p' : '720p',
-            safetyCapKey: '1080p',
-            networkLabel: `Wi-Fi / Broadband • Up to ${useFhd ? 'Full HD (1080p)' : 'HD (720p)'}`,
-            isMobileData: false
-        };
-    }
-    // Desktop / browsers that omit connection.type and report effectiveType: '4g'
-    if (downlink >= 8) {
-        return { key: '1080p', safetyCapKey: '1080p', networkLabel: 'Fast Network • Up to Full HD (1080p)', isMobileData: false };
-    }
-    return { key: '720p', safetyCapKey: '1080p', networkLabel: 'Good Network • Up to HD (720p)', isMobileData: false };
+    // On Wi-Fi / Ethernet / standard broadband: allow WebRTC to push all the way to Full HD (1080p),
+    // while WebRTC congestion control naturally scales down smoothly if connection dips!
+    return { key: '1080p', networkLabel: 'Wi-Fi / Broadband • Auto Up to Full HD (1080p)', isMobileData: false };
 }
 
 function getEffectiveQualityProfile() {
     const autoInfo = getNetworkAutoSummary();
-    // Chosen preset is always a MAX CEILING, never a forced minimum!
-    const userMaxKey = QUALITY_PRESETS[privateQualityMode] ? privateQualityMode : '1080p';
-    const osAllowedKey = QUALITY_PRESETS[privateQualityMode] ? autoInfo.safetyCapKey : autoInfo.key;
-    const effectiveKey = minQualityTier(minQualityTier(userMaxKey, osAllowedKey), liveNetworkTierKey);
+    const chosenKey = QUALITY_PRESETS[privateQualityMode] ? privateQualityMode : autoInfo.key;
+    const profile = QUALITY_PRESETS[chosenKey] || QUALITY_PRESETS['1080p'];
     return {
         mode: privateQualityMode,
-        userMaxKey,
-        effectiveKey,
-        throttledByNetwork: effectiveKey !== userMaxKey && QUALITY_PRESETS[privateQualityMode],
-        profile: QUALITY_PRESETS[effectiveKey] || QUALITY_PRESETS['720p'],
-        userMaxProfile: QUALITY_PRESETS[userMaxKey] || QUALITY_PRESETS['1080p'],
+        userMaxKey: chosenKey,
+        effectiveKey: chosenKey,
+        throttledByNetwork: false,
+        profile,
+        userMaxProfile: profile,
         autoInfo
     };
 }
@@ -3903,7 +3903,7 @@ async function applySenderVideoQuality(pc, remotePref = null) {
             params.encodings[0].maxFramerate = cap.fps;
             params.encodings[0].scaleResolutionDownBy = cap.scaleDown;
             try {
-                params.degradationPreference = cap.degradation;
+                params.degradationPreference = 'balanced';
             } catch (e) {}
             await sender.setParameters(params);
         } catch (err) {
@@ -3939,23 +3939,15 @@ async function applyQualityToActivePeersAndTracks() {
 async function requestCameraStreamForQuality(facingMode, exactFacing = false) {
     const { profile } = getEffectiveQualityProfile();
     const facingConstraint = exactFacing ? { exact: facingMode } : facingMode;
-    // Use ideal + max (never force high min) so weak hardware/connections gracefully step lower
+    // Ask camera for ideal target resolution (without forcing high min) so good cameras give sharp HD/FHD
+    // while WebRTC balanced congestion control automatically adapts down only if network actually struggles
+    const primaryVideo = profile.hardCap
+        ? { width: { min: 160, ideal: profile.width, max: profile.width }, height: { min: 120, ideal: profile.height, max: profile.height }, frameRate: { ideal: profile.fps, max: profile.fps }, facingMode: facingConstraint }
+        : { width: { ideal: profile.width }, height: { ideal: profile.height }, frameRate: { ideal: profile.fps, max: 30 }, facingMode: facingConstraint };
+
     const attempts = [
-        {
-            video: {
-                width: { min: 160, ideal: profile.width, max: profile.width },
-                height: { min: 120, ideal: profile.height, max: profile.height },
-                frameRate: { min: 8, ideal: profile.fps, max: profile.fps },
-                facingMode: facingConstraint
-            }
-        },
-        {
-            video: {
-                width: { ideal: profile.width },
-                height: { ideal: profile.height },
-                facingMode: facingConstraint
-            }
-        },
+        { video: primaryVideo },
+        { video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: facingConstraint } },
         { video: { facingMode: facingConstraint } },
         { video: { facingMode } },
         { video: true }
@@ -3977,23 +3969,33 @@ async function applyConstraintsToStream(stream) {
     if (!track || typeof track.applyConstraints !== 'function') return;
     const { profile } = getEffectiveQualityProfile();
     try {
-        await track.applyConstraints({
-            width: { min: 160, ideal: profile.width, max: profile.width },
-            height: { min: 120, ideal: profile.height, max: profile.height },
-            frameRate: { min: 8, ideal: profile.fps, max: profile.fps }
-        });
+        await track.applyConstraints(profile.hardCap
+            ? { width: { min: 160, ideal: profile.width, max: profile.width }, height: { min: 120, ideal: profile.height, max: profile.height }, frameRate: { ideal: profile.fps, max: profile.fps } }
+            : { width: { ideal: profile.width }, height: { ideal: profile.height }, frameRate: { ideal: profile.fps, max: 30 } }
+        );
     } catch (e) {}
 }
 
 function emitCurrentQualityPref(scope = 'both', targetMemberId = null) {
     const { mode, profile } = getEffectiveQualityProfile();
-    const payload = {
-        preset: mode === 'auto' ? `auto:${profile.key}` : profile.key,
-        maxWidth: profile.width,
-        maxHeight: profile.height,
-        maxBitrate: profile.maxBitrate,
-        maxFramerate: profile.fps
-    };
+    // Only ask partner to cap download if user is in Data Saver (360p) or Standard (480p);
+    // otherwise send maxBitrate: 0 (no artificial cap — let partner stream up to full HD!)
+    const wantsDataCap = profile.key === '360p' || profile.key === '480p';
+    const payload = wantsDataCap
+        ? {
+            preset: mode === 'auto' ? `auto:${profile.key}` : profile.key,
+            maxWidth: profile.width,
+            maxHeight: profile.height,
+            maxBitrate: profile.maxBitrate,
+            maxFramerate: profile.fps
+        }
+        : {
+            preset: mode === 'auto' ? `auto:${profile.key}` : profile.key,
+            maxWidth: 0,
+            maxHeight: 0,
+            maxBitrate: 0,
+            maxFramerate: 0
+        };
     if ((scope === 'private' || scope === 'both') && peerConnection) {
         socket.emit('private_quality_pref', payload);
     }
@@ -4003,10 +4005,8 @@ function emitCurrentQualityPref(scope = 'both', targetMemberId = null) {
 }
 
 function updateQualityUiBadges() {
-    const { mode, profile, throttledByNetwork, userMaxProfile, autoInfo } = getEffectiveQualityProfile();
-    const badgeLabel = mode === 'auto'
-        ? `AUTO`
-        : (throttledByNetwork ? `${profile.badge}*` : profile.badge);
+    const { mode, profile, autoInfo } = getEffectiveQualityProfile();
+    const badgeLabel = mode === 'auto' ? `AUTO` : profile.badge;
     const isSaver = profile.key === '360p' || profile.key === '480p';
     const isHd = profile.key === '720p' || profile.key === '1080p';
 
@@ -4019,20 +4019,14 @@ function updateQualityUiBadges() {
         if (btn) {
             btn.classList.toggle('is-saver', isSaver);
             btn.classList.toggle('is-hd', isHd && !isSaver);
-            btn.title = throttledByNetwork
-                ? `Max ${userMaxProfile.badge} — network adapted to ${profile.badge}`
-                : `Video Quality: ${mode === 'auto' ? autoInfo.networkLabel : profile.label}`;
+            btn.title = `Video Quality: ${mode === 'auto' ? autoInfo.networkLabel : profile.label}`;
         }
     }
 
     const netEl = document.getElementById('quality-network-status');
-    if (netEl) {
-        netEl.innerText = throttledByNetwork
-            ? `Adapting smoothly: ${profile.badge} (below your ${userMaxProfile.badge} max due to signal)`
-            : autoInfo.networkLabel;
-    }
+    if (netEl) netEl.innerText = autoInfo.networkLabel;
     const autoDesc = document.getElementById('q-auto-desc');
-    if (autoDesc) autoDesc.innerText = `Currently: ${profile.label} (adapts smoothly to internet speed)`;
+    if (autoDesc) autoDesc.innerText = `Currently: ${profile.label} (uses best clarity Wi-Fi allows, Data Saver on mobile)`;
 
     document.querySelectorAll('#quality-options-list .quality-option-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.quality === privateQualityMode);
@@ -4041,13 +4035,18 @@ function updateQualityUiBadges() {
 
 async function setVideoQualityPreference(mode) {
     privateQualityMode = (mode === 'auto' || QUALITY_PRESETS[mode]) ? mode : 'auto';
-    // Reset congestion backoff to user's chosen ceiling; live stats will smoothly throttle if needed
-    liveNetworkTierKey = QUALITY_PRESETS[privateQualityMode] ? privateQualityMode : '1080p';
-    healthyProbeStreak = 0;
     try { localStorage.setItem('gc_video_quality', privateQualityMode); } catch (e) {}
     updateQualityUiBadges();
     await applyQualityToActivePeersAndTracks();
     emitCurrentQualityPref('both');
+}
+
+let sessionTotalSentBytes = 0;
+let sessionTotalRecvBytes = 0;
+
+function formatBytesToMb(bytes) {
+    const mb = (Number(bytes) || 0) / (1024 * 1024);
+    return mb >= 10 ? mb.toFixed(1) : mb.toFixed(2);
 }
 
 function updateQualityLiveStatsPanel() {
@@ -4066,87 +4065,50 @@ function updateQualityLiveStatsPanel() {
     document.querySelectorAll('video[id^="video-"]:not(.hidden)').forEach(v => {
         if (v.videoWidth > 0) parts.push(`Remote: ${v.videoWidth}x${v.videoHeight}`);
     });
-    const { profile, throttledByNetwork, userMaxProfile } = getEffectiveQualityProfile();
-    const adaptNote = throttledByNetwork ? ` — adapted below ${userMaxProfile.badge} max` : '';
+    const { profile } = getEffectiveQualityProfile();
+    const totalBytes = sessionTotalSentBytes + sessionTotalRecvBytes;
+    const dataText = totalBytes > 1024
+        ? ` • Used ${formatBytesToMb(totalBytes)} MB (▲${formatBytesToMb(sessionTotalSentBytes)} ▼${formatBytesToMb(sessionTotalRecvBytes)})`
+        : '';
     statsEl.innerText = parts.length > 0
-        ? `Live: ${parts.join(' | ')} (Max ${(profile.maxBitrate / 1000).toFixed(0)} kbps${adaptNote})`
-        : `Target: ${profile.label} (~${(profile.maxBitrate / 1000).toFixed(0)} kbps max${adaptNote})`;
+        ? `Live: ${parts.join(' | ')}${dataText}`
+        : `Target: ${profile.label} (Max ${(profile.maxBitrate / 1000).toFixed(0)} kbps)${dataText}`;
 }
 
-// Live WebRTC congestion & packet-loss monitor (runs every 3.5s during active calls)
+// Read-only live WebRTC MB traffic counter (never forces artificial video downgrades!)
 async function measureConnectionAndAdapt() {
-    const activePcs = [];
-    if (peerConnection && ['connected', 'completed'].includes(peerConnection.iceConnectionState) && isPrivateCameraOn) {
-        activePcs.push(peerConnection);
+    const connectedPcs = [];
+    if (peerConnection && ['connected', 'completed'].includes(peerConnection.iceConnectionState)) {
+        connectedPcs.push(peerConnection);
     }
-    if (isLocalCameraOn) {
-        for (const peer of groupPeers.values()) {
-            if (peer && peer.pc && ['connected', 'completed'].includes(peer.pc.iceConnectionState)) {
-                activePcs.push(peer.pc);
-            }
+    for (const peer of groupPeers.values()) {
+        if (peer && peer.pc && ['connected', 'completed'].includes(peer.pc.iceConnectionState)) {
+            connectedPcs.push(peer.pc);
         }
     }
-    if (activePcs.length === 0) return;
+    if (connectedPcs.length === 0) return;
 
-    let minAvailBps = Infinity;
-    let maxRttSec = 0;
-    let maxFracLost = 0;
-
-    for (const pc of activePcs) {
+    for (const pc of connectedPcs) {
         try {
             const report = await pc.getStats();
+            let pcSent = 0;
+            let pcRecv = 0;
             report.forEach(stat => {
-                if (stat.type === 'candidate-pair' && stat.state === 'succeeded') {
-                    if (typeof stat.availableOutgoingBitrate === 'number' && stat.availableOutgoingBitrate > 0) {
-                        minAvailBps = Math.min(minAvailBps, stat.availableOutgoingBitrate);
-                    }
-                    if (typeof stat.currentRoundTripTime === 'number') {
-                        maxRttSec = Math.max(maxRttSec, stat.currentRoundTripTime);
-                    }
-                } else if (stat.type === 'remote-inbound-rtp' && stat.kind === 'video') {
-                    if (typeof stat.fractionLost === 'number') {
-                        maxFracLost = Math.max(maxFracLost, stat.fractionLost);
-                    }
-                    if (typeof stat.roundTripTime === 'number') {
-                        maxRttSec = Math.max(maxRttSec, stat.roundTripTime);
-                    }
+                if (stat.type === 'outbound-rtp' && typeof stat.bytesSent === 'number') {
+                    pcSent += stat.bytesSent;
+                } else if (stat.type === 'inbound-rtp' && typeof stat.bytesReceived === 'number') {
+                    pcRecv += stat.bytesReceived;
                 }
             });
+            const prev = pc._gcTrafficStats || { sent: 0, recv: 0 };
+            if (pcSent >= prev.sent) sessionTotalSentBytes += (pcSent - prev.sent);
+            if (pcRecv >= prev.recv) sessionTotalRecvBytes += (pcRecv - prev.recv);
+            pc._gcTrafficStats = { sent: pcSent, recv: pcRecv };
         } catch (e) {}
     }
 
-    const { userMaxKey, effectiveKey, profile } = getEffectiveQualityProfile();
-    const curIdx = QUALITY_TIER_ORDER.indexOf(effectiveKey);
-    const maxIdx = QUALITY_TIER_ORDER.indexOf(userMaxKey);
-    const congested = maxFracLost > 0.05 || maxRttSec > 0.45 || (minAvailBps < Infinity && minAvailBps < profile.maxBitrate * 0.55);
-
-    if (congested && curIdx > 0) {
-        healthyProbeStreak = 0;
-        const lowerKey = QUALITY_TIER_ORDER[curIdx - 1];
-        if (lowerKey !== liveNetworkTierKey) {
-            liveNetworkTierKey = lowerKey;
-            console.log(`[Quality] Network congested (avail=${Math.round(minAvailBps / 1000)}kbps, rtt=${maxRttSec.toFixed(2)}s, loss=${(maxFracLost * 100).toFixed(1)}%) -> adapting smoothly to ${lowerKey}`);
-            updateQualityUiBadges();
-            await applyQualityToActivePeersAndTracks();
-            emitCurrentQualityPref('both');
-        }
-    } else if (!congested && curIdx < maxIdx) {
-        const nextKey = QUALITY_TIER_ORDER[curIdx + 1];
-        const nextPreset = QUALITY_PRESETS[nextKey];
-        const roomToGrow = minAvailBps === Infinity || minAvailBps >= nextPreset.maxBitrate * 1.15;
-        if (roomToGrow && maxRttSec < 0.25 && maxFracLost < 0.015) {
-            healthyProbeStreak++;
-            if (healthyProbeStreak >= 2) {
-                healthyProbeStreak = 0;
-                liveNetworkTierKey = nextKey;
-                console.log(`[Quality] Network healthy -> stepping up toward ceiling: ${nextKey}`);
-                updateQualityUiBadges();
-                await applyQualityToActivePeersAndTracks();
-                emitCurrentQualityPref('both');
-            }
-        } else {
-            healthyProbeStreak = 0;
-        }
+    if (qualitySheetEl && qualitySheetEl.classList.contains('open')) {
+        updateQualityLiveStatsPanel();
     }
 }
 setInterval(() => { measureConnectionAndAdapt(); }, 3500);
@@ -4374,3 +4336,389 @@ async function toggleGroupScreenShare() {
 
 privateShareScreenBtn?.addEventListener('click', togglePrivateScreenShare);
 groupShareScreenBtn?.addEventListener('click', toggleGroupScreenShare);
+
+// =====================================================================
+// v8.2: NETWORK RECONNECT BANNER, ORGANIZED STUDIO TRAYS,
+//       QUICK VOICE NOTES (1-ON-1 + GROUP), AND PWA INSTALL
+// =====================================================================
+const networkReconnectBanner = document.getElementById('network-reconnect-banner');
+const networkReconnectText = document.getElementById('network-reconnect-text');
+let reconnectBannerHideTimer = null;
+
+function showNetworkReconnectBanner(msg = 'Switching network… Reconnecting call') {
+    if (!networkReconnectBanner) return;
+    if (networkReconnectText) networkReconnectText.innerText = msg;
+    networkReconnectBanner.classList.remove('hidden');
+    clearTimeout(reconnectBannerHideTimer);
+    reconnectBannerHideTimer = setTimeout(() => {
+        if (networkReconnectBanner) networkReconnectBanner.classList.add('hidden');
+    }, 9000);
+}
+
+function hideNetworkReconnectBanner() {
+    clearTimeout(reconnectBannerHideTimer);
+    if (networkReconnectBanner) networkReconnectBanner.classList.add('hidden');
+}
+
+if (navigator.connection && typeof navigator.connection.addEventListener === 'function') {
+    navigator.connection.addEventListener('change', () => {
+        const hasActiveCall = !!peerConnection || groupPeers.size > 0;
+        if (hasActiveCall) {
+            showNetworkReconnectBanner('Network changed — keeping call alive...');
+            if (peerConnection && isPrivateInitiator && peerConnection.signalingState === 'stable') {
+                if (typeof peerConnection.restartIce === 'function') peerConnection.restartIce();
+                peerConnection.createOffer({ iceRestart: true }).then(o => peerConnection.setLocalDescription(o)).then(() => {
+                    socket.emit('signal', { offer: peerConnection.localDescription });
+                }).catch(() => {});
+            } else if (peerConnection && !isPrivateInitiator) {
+                socket.emit('signal', { requestIceRestart: true });
+            }
+            for (const [peerId, peer] of groupPeers.entries()) {
+                if (peer && peer.pc && peer.pc.signalingState === 'stable') {
+                    if ((socket.id || '') > peerId) {
+                        if (typeof peer.pc.restartIce === 'function') peer.pc.restartIce();
+                        peer.pc.createOffer({ iceRestart: true }).then(o => peer.pc.setLocalDescription(o)).then(() => {
+                            socket.emit('group_signal', { to: peerId, data: { offer: peer.pc.localDescription } });
+                        }).catch(() => {});
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Smart Send <-> Voice button swap in 1-on-1 chat input bar
+function syncPrivateInputActionButton() {
+    const voiceBtn = document.getElementById('private-voice-btn');
+    if (!messageInput || !sendBtn || !voiceBtn) return;
+    const hasText = messageInput.value.trim().length > 0;
+    sendBtn.classList.toggle('hidden', !hasText);
+    voiceBtn.classList.toggle('hidden', hasText);
+}
+if (messageInput) {
+    messageInput.addEventListener('input', syncPrivateInputActionButton);
+    syncPrivateInputActionButton();
+}
+
+// Organized Studio "+" Tool Trays (1-on-1 & Group/Public Live)
+function wireStudioTray({ plusBtnId, trayId, extraIdsToClose = [] }) {
+    const plusBtn = document.getElementById(plusBtnId);
+    const tray = document.getElementById(trayId);
+    if (!plusBtn || !tray) return;
+
+    const closeTray = () => {
+        tray.classList.add('hidden');
+        plusBtn.classList.remove('open');
+    };
+
+    plusBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const willOpen = tray.classList.contains('hidden');
+        extraIdsToClose.forEach(id => document.getElementById(id)?.classList.add('hidden'));
+        tray.classList.toggle('hidden', !willOpen);
+        plusBtn.classList.toggle('open', willOpen);
+    });
+
+    tray.querySelectorAll('button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            closeTray();
+        });
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!tray.classList.contains('hidden') && !tray.contains(e.target) && !plusBtn.contains(e.target)) {
+            closeTray();
+        }
+    });
+}
+
+wireStudioTray({
+    plusBtnId: 'private-plus-btn',
+    trayId: 'private-tools-tray',
+    extraIdsToClose: ['private-reaction-dock']
+});
+wireStudioTray({
+    plusBtnId: 'group-plus-btn',
+    trayId: 'group-tools-tray',
+    extraIdsToClose: ['group-reaction-dock']
+});
+
+// ===== Shared Voice Note Player & Recorder (1-on-1 + Group/Public) =====
+let activePlayingVoiceAudio = null;
+let activePlayingVoiceResetFn = null;
+
+function formatVoiceSec(sec) {
+    const s = Math.max(0, Math.round(Number(sec) || 0));
+    const mins = Math.floor(s / 60);
+    const rem = s % 60;
+    return `${mins}:${String(rem).padStart(2, '0')}`;
+}
+
+function createVoiceNotePlayer(audioDataUrl, durationSec = 1) {
+    const card = document.createElement('div');
+    card.className = 'voice-note-card';
+    card.innerHTML = `
+        <button type="button" class="voice-note-play-btn" title="Play Voice Message">
+            <i class="fas fa-play"></i>
+        </button>
+        <div class="voice-note-progress-wrap">
+            <div class="voice-note-progress"><div class="voice-note-bar-fill"></div></div>
+            <span class="voice-note-dur">${formatVoiceSec(durationSec)}</span>
+        </div>
+    `;
+
+    const playBtn = card.querySelector('.voice-note-play-btn');
+    const iconEl = playBtn.querySelector('i');
+    const fillEl = card.querySelector('.voice-note-bar-fill');
+    const durEl = card.querySelector('.voice-note-dur');
+
+    const audio = new Audio(audioDataUrl);
+    audio.preload = 'metadata';
+
+    const resetUi = () => {
+        iconEl.className = 'fas fa-play';
+        fillEl.style.width = '0%';
+        durEl.innerText = formatVoiceSec(durationSec);
+        if (activePlayingVoiceAudio === audio) {
+            activePlayingVoiceAudio = null;
+            activePlayingVoiceResetFn = null;
+        }
+    };
+
+    audio.addEventListener('timeupdate', () => {
+        const total = (audio.duration && isFinite(audio.duration)) ? audio.duration : (durationSec || 1);
+        const pct = Math.min(100, Math.max(0, (audio.currentTime / total) * 100));
+        fillEl.style.width = `${pct}%`;
+        durEl.innerText = `${formatVoiceSec(audio.currentTime)} / ${formatVoiceSec(total)}`;
+    });
+
+    audio.addEventListener('ended', resetUi);
+    audio.addEventListener('error', resetUi);
+
+    playBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!audio.paused) {
+            audio.pause();
+            iconEl.className = 'fas fa-play';
+            return;
+        }
+        if (activePlayingVoiceAudio && activePlayingVoiceAudio !== audio) {
+            try { activePlayingVoiceAudio.pause(); } catch (err) {}
+            if (typeof activePlayingVoiceResetFn === 'function') activePlayingVoiceResetFn();
+        }
+        activePlayingVoiceAudio = audio;
+        activePlayingVoiceResetFn = resetUi;
+        iconEl.className = 'fas fa-pause';
+        audio.play().catch((err) => {
+            console.warn('[VoiceNote] Play blocked/failed:', err);
+            resetUi();
+        });
+    });
+
+    return card;
+}
+
+function addPrivateVoiceMessage(audioData, duration, type) {
+    if (!messagesContainer || !audioData) return;
+    const div = document.createElement('div');
+    div.className = `msg ${type}`;
+    div.appendChild(createVoiceNotePlayer(audioData, duration));
+    messagesContainer.appendChild(div);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+    if (type === 'received' && isPrivateChatHidden) {
+        privateUnreadCount++;
+        updatePrivateUnreadUi();
+        showPrivateToast(`🔊 Partner sent a voice message (${formatVoiceSec(duration)})`);
+    }
+}
+
+socket.on('private_voice_note', ({ audioData, duration } = {}) => {
+    if (!audioData) return;
+    addPrivateVoiceMessage(audioData, duration || 1, 'received');
+    playSystemSound('message');
+});
+
+const voiceRecorderControllers = {};
+
+function cancelActiveVoiceRecording(scope) {
+    const ctrl = voiceRecorderControllers[scope];
+    if (ctrl && typeof ctrl.cancel === 'function') ctrl.cancel();
+}
+
+function initVoiceRecorderController({ scope, triggerBtnId, barId, timerId, cancelBtnId, sendBtnId, onSendVoice }) {
+    const triggerBtn = document.getElementById(triggerBtnId);
+    const barEl = document.getElementById(barId);
+    const timerEl = document.getElementById(timerId);
+    const cancelBtn = document.getElementById(cancelBtnId);
+    const sendBtnEl = document.getElementById(sendBtnId);
+    if (!triggerBtn || !barEl || typeof MediaRecorder === 'undefined') {
+        if (triggerBtn && typeof MediaRecorder === 'undefined') triggerBtn.classList.add('hidden');
+        return;
+    }
+
+    let recorder = null;
+    let chunks = [];
+    let recStream = null;
+    let ownsStream = false;
+    let startTs = 0;
+    let timerInterval = null;
+    let discardRecording = false;
+
+    const cleanup = () => {
+        clearInterval(timerInterval);
+        timerInterval = null;
+        if (barEl) barEl.classList.add('hidden');
+        triggerBtn.classList.remove('is-recording');
+        if (ownsStream && recStream) {
+            recStream.getTracks().forEach(t => t.stop());
+        } else if (recStream) {
+            recStream.getTracks().forEach(t => t.stop());
+        }
+        recStream = null;
+        recorder = null;
+        chunks = [];
+    };
+
+    const pickBestAudioMime = () => {
+        const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+        if (typeof MediaRecorder.isTypeSupported !== 'function') return '';
+        return candidates.find(m => MediaRecorder.isTypeSupported(m)) || '';
+    };
+
+    const startRecording = async () => {
+        if (recorder && recorder.state === 'recording') {
+            stopAndSend();
+            return;
+        }
+        try {
+            discardRecording = false;
+            const liveAudioTrack = (scope === 'private' ? localStream : groupAudioStream)?.getAudioTracks?.()[0];
+            if (liveAudioTrack && liveAudioTrack.readyState === 'live' && liveAudioTrack.enabled) {
+                recStream = new MediaStream([liveAudioTrack.clone()]);
+                ownsStream = false;
+            } else {
+                recStream = await navigator.mediaDevices.getUserMedia({
+                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                });
+                ownsStream = true;
+            }
+
+            const mimeType = pickBestAudioMime();
+            const opts = mimeType ? { mimeType, audioBitsPerSecond: 32000 } : { audioBitsPerSecond: 32000 };
+            recorder = new MediaRecorder(recStream, opts);
+            chunks = [];
+            startTs = Date.now();
+
+            recorder.ondataavailable = (ev) => {
+                if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+            };
+
+            recorder.onstop = () => {
+                const elapsedSec = Math.max(1, Math.round((Date.now() - startTs) / 1000));
+                const recordedChunks = chunks;
+                const finalMime = (recorder && recorder.mimeType) || mimeType || 'audio/webm';
+                const shouldDiscard = discardRecording;
+                cleanup();
+                if (shouldDiscard || !recordedChunks || recordedChunks.length === 0) return;
+
+                const blob = new Blob(recordedChunks, { type: finalMime });
+                if (blob.size < 400) return;
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    if (typeof reader.result === 'string' && reader.result.startsWith('data:audio/')) {
+                        onSendVoice(reader.result, elapsedSec, finalMime);
+                    }
+                };
+                reader.readAsDataURL(blob);
+            };
+
+            recorder.start(250);
+            barEl.classList.remove('hidden');
+            triggerBtn.classList.add('is-recording');
+            if (timerEl) timerEl.innerText = '0:00';
+            timerInterval = setInterval(() => {
+                const sec = Math.floor((Date.now() - startTs) / 1000);
+                if (timerEl) timerEl.innerText = formatVoiceSec(sec);
+                if (sec >= 45) stopAndSend();
+            }, 250);
+        } catch (err) {
+            console.warn(`[VoiceNote] Could not record (${scope}):`, err);
+            cleanup();
+            alert('Microphone permission is needed to record a voice note.');
+        }
+    };
+
+    const stopAndSend = () => {
+        discardRecording = false;
+        if (recorder && recorder.state === 'recording') {
+            recorder.stop();
+        } else {
+            cleanup();
+        }
+    };
+
+    const cancel = () => {
+        discardRecording = true;
+        if (recorder && recorder.state === 'recording') {
+            recorder.stop();
+        } else {
+            cleanup();
+        }
+    };
+
+    triggerBtn.addEventListener('click', startRecording);
+    cancelBtn?.addEventListener('click', cancel);
+    sendBtnEl?.addEventListener('click', stopAndSend);
+    voiceRecorderControllers[scope] = { cancel };
+}
+
+initVoiceRecorderController({
+    scope: 'private',
+    triggerBtnId: 'private-voice-btn',
+    barId: 'private-voice-recording-bar',
+    timerId: 'private-voice-rec-timer',
+    cancelBtnId: 'private-voice-cancel-btn',
+    sendBtnId: 'private-voice-send-btn',
+    onSendVoice: (audioData, duration, mimeType) => {
+        if (!peerConnection && !currentRoomId) return;
+        socket.emit('private_voice_note', { audioData, duration, mimeType });
+        addPrivateVoiceMessage(audioData, duration, 'sent');
+    }
+});
+
+initVoiceRecorderController({
+    scope: 'group',
+    triggerBtnId: 'group-voice-btn',
+    barId: 'group-voice-recording-bar',
+    timerId: 'group-voice-rec-timer',
+    cancelBtnId: 'group-voice-cancel-btn',
+    sendBtnId: 'group-voice-send-btn',
+    onSendVoice: (audioData, duration, mimeType) => {
+        if (!currentGroupPin) return;
+        socket.emit('group_chat_message', { voiceData: audioData, voiceDuration: duration, voiceMime: mimeType });
+    }
+});
+
+// ===== PWA Registration & Install App Button =====
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+    });
+}
+
+let deferredPwaPrompt = null;
+const pwaInstallBtn = document.getElementById('pwa-install-btn');
+window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPwaPrompt = e;
+    if (pwaInstallBtn) pwaInstallBtn.classList.remove('hidden');
+});
+
+pwaInstallBtn?.addEventListener('click', async () => {
+    if (!deferredPwaPrompt) return;
+    deferredPwaPrompt.prompt();
+    try { await deferredPwaPrompt.userChoice; } catch (e) {}
+    deferredPwaPrompt = null;
+    if (pwaInstallBtn) pwaInstallBtn.classList.add('hidden');
+});
