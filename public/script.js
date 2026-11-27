@@ -1,4 +1,4 @@
-console.log("CONNECTED_JS_VERSION: 8.0 - Adaptive HD + YouTube Quality Control + Live Reactions");
+console.log("CONNECTED_JS_VERSION: 8.1 - True Max-Ceiling Adaptive HD + Live Stats Control");
 if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     alert("CRITICAL: You are using HTTP. WebRTC (Voice) requires HTTPS to work. Redirecting to Secure Site...");
     window.location.href = window.location.href.replace('http:', 'https:');
@@ -3789,20 +3789,32 @@ function selectAndSendGif(gifUrl) {
 })();
 
 // =====================================================================
-// v8.0: YOUTUBE-STYLE VIDEO QUALITY + STUDENT DATA SAVER + SCREEN SHARE
-//       + LIVE FLOATING EMOJI REACTIONS
+// v8.1: TRUE MAX-CEILING VIDEO QUALITY + LIVE CONGESTION ADAPTATION
+//       + STUDENT DATA SAVER + SCREEN SHARE + LIVE REACTIONS
 // =====================================================================
+const QUALITY_TIER_ORDER = ['360p', '480p', '720p', '1080p'];
 const QUALITY_PRESETS = {
-    '360p': { key: '360p', badge: '360p', label: 'Data Saver (360p)', width: 640, height: 360, fps: 18, maxBitrate: 320000, scaleDown: 2.0, degradation: 'maintain-framerate' },
-    '480p': { key: '480p', badge: '480p', label: 'Standard (480p)', width: 854, height: 480, fps: 24, maxBitrate: 650000, scaleDown: 1.4, degradation: 'balanced' },
-    '720p': { key: '720p', badge: 'HD', label: 'HD (720p)', width: 1280, height: 720, fps: 30, maxBitrate: 1500000, scaleDown: 1.0, degradation: 'balanced' },
-    '1080p': { key: '1080p', badge: 'FHD', label: 'Full HD (1080p)', width: 1920, height: 1080, fps: 30, maxBitrate: 3000000, scaleDown: 1.0, degradation: 'maintain-resolution' }
+    '360p': { key: '360p', badge: '360p', label: 'Data Saver (Max 360p)', width: 640, height: 360, fps: 18, maxBitrate: 320000, scaleDown: 2.0, degradation: 'balanced' },
+    '480p': { key: '480p', badge: '480p', label: 'Standard (Max 480p)', width: 854, height: 480, fps: 24, maxBitrate: 650000, scaleDown: 1.4, degradation: 'balanced' },
+    '720p': { key: '720p', badge: 'HD', label: 'HD (Max 720p)', width: 1280, height: 720, fps: 30, maxBitrate: 1500000, scaleDown: 1.0, degradation: 'balanced' },
+    '1080p': { key: '1080p', badge: 'FHD', label: 'Full HD (Max 1080p)', width: 1920, height: 1080, fps: 30, maxBitrate: 3000000, scaleDown: 1.0, degradation: 'balanced' }
 };
+
+let liveNetworkTierKey = '1080p';
+let healthyProbeStreak = 0;
+
+function minQualityTier(a, b) {
+    const idxA = QUALITY_TIER_ORDER.indexOf(a);
+    const idxB = QUALITY_TIER_ORDER.indexOf(b);
+    if (idxA === -1) return QUALITY_PRESETS[b] ? b : '720p';
+    if (idxB === -1) return QUALITY_PRESETS[a] ? a : '720p';
+    return QUALITY_TIER_ORDER[Math.min(idxA, idxB)];
+}
 
 function getNetworkAutoSummary() {
     const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
     if (!conn) {
-        return { key: '720p', networkLabel: 'Standard Connection • Auto HD (720p)', isMobileData: false };
+        return { key: '720p', safetyCapKey: '1080p', networkLabel: 'Standard Connection • Up to 720p', isMobileData: false };
     }
     const saveData = !!conn.saveData;
     const eff = String(conn.effectiveType || '').toLowerCase();
@@ -3810,13 +3822,14 @@ function getNetworkAutoSummary() {
     const downlink = Number(conn.downlink) || 0;
 
     if (saveData || eff === 'slow-2g' || eff === '2g' || eff === '3g' || (downlink > 0 && downlink < 1.0)) {
-        return { key: '360p', networkLabel: 'Slow / Data Saver • Auto 360p', isMobileData: true };
+        return { key: '360p', safetyCapKey: '360p', networkLabel: 'Slow / Data Saver • Adapted to 360p', isMobileData: true };
     }
     if (type === 'cellular') {
         const useLowCellular = downlink > 0 && downlink < 2.5;
         return {
             key: useLowCellular ? '360p' : '480p',
-            networkLabel: `Mobile Data (Cellular) • Auto ${useLowCellular ? 'Data Saver (360p)' : 'Standard (480p)'}`,
+            safetyCapKey: useLowCellular ? '360p' : '480p',
+            networkLabel: `Mobile Data (Cellular) • Smart Cap ${useLowCellular ? '360p' : '480p'}`,
             isMobileData: true
         };
     }
@@ -3824,23 +3837,31 @@ function getNetworkAutoSummary() {
         const useFhd = downlink >= 8 || type === 'ethernet';
         return {
             key: useFhd ? '1080p' : '720p',
-            networkLabel: `Wi-Fi / Broadband • Auto ${useFhd ? 'Full HD (1080p)' : 'HD (720p)'}`,
+            safetyCapKey: '1080p',
+            networkLabel: `Wi-Fi / Broadband • Up to ${useFhd ? 'Full HD (1080p)' : 'HD (720p)'}`,
             isMobileData: false
         };
     }
     // Desktop / browsers that omit connection.type and report effectiveType: '4g'
     if (downlink >= 8) {
-        return { key: '1080p', networkLabel: 'Fast Network • Auto Full HD (1080p)', isMobileData: false };
+        return { key: '1080p', safetyCapKey: '1080p', networkLabel: 'Fast Network • Up to Full HD (1080p)', isMobileData: false };
     }
-    return { key: '720p', networkLabel: 'Good Network • Auto HD (720p)', isMobileData: false };
+    return { key: '720p', safetyCapKey: '1080p', networkLabel: 'Good Network • Up to HD (720p)', isMobileData: false };
 }
 
 function getEffectiveQualityProfile() {
     const autoInfo = getNetworkAutoSummary();
-    const chosenKey = QUALITY_PRESETS[privateQualityMode] ? privateQualityMode : autoInfo.key;
+    // Chosen preset is always a MAX CEILING, never a forced minimum!
+    const userMaxKey = QUALITY_PRESETS[privateQualityMode] ? privateQualityMode : '1080p';
+    const osAllowedKey = QUALITY_PRESETS[privateQualityMode] ? autoInfo.safetyCapKey : autoInfo.key;
+    const effectiveKey = minQualityTier(minQualityTier(userMaxKey, osAllowedKey), liveNetworkTierKey);
     return {
         mode: privateQualityMode,
-        profile: QUALITY_PRESETS[chosenKey] || QUALITY_PRESETS['720p'],
+        userMaxKey,
+        effectiveKey,
+        throttledByNetwork: effectiveKey !== userMaxKey && QUALITY_PRESETS[privateQualityMode],
+        profile: QUALITY_PRESETS[effectiveKey] || QUALITY_PRESETS['720p'],
+        userMaxProfile: QUALITY_PRESETS[userMaxKey] || QUALITY_PRESETS['1080p'],
         autoInfo
     };
 }
@@ -3861,7 +3882,7 @@ function pickStrictQualityCap(localProfile, remotePref) {
         maxBitrate: cappedBitrate,
         fps: cappedFps,
         scaleDown,
-        degradation: cappedHeight <= 360 ? 'maintain-framerate' : localProfile.degradation
+        degradation: 'balanced'
     };
 }
 
@@ -3886,7 +3907,6 @@ async function applySenderVideoQuality(pc, remotePref = null) {
             } catch (e) {}
             await sender.setParameters(params);
         } catch (err) {
-            // Fallback without optional fields if a mobile browser rejects one parameter
             try {
                 const retryParams = sender.getParameters() || {};
                 if (!Array.isArray(retryParams.encodings) || retryParams.encodings.length === 0) {
@@ -3899,15 +3919,40 @@ async function applySenderVideoQuality(pc, remotePref = null) {
     }
 }
 
+async function applyQualityToActivePeersAndTracks() {
+    if (isPrivateCameraOn && privateLocalVideoStream && !isPrivateScreenSharing) {
+        await applyConstraintsToStream(privateLocalVideoStream);
+    }
+    if (isLocalCameraOn && groupVideoStream && !isGroupScreenSharing) {
+        await applyConstraintsToStream(groupVideoStream);
+    }
+    if (peerConnection) {
+        await applySenderVideoQuality(peerConnection, partnerRequestedQuality);
+    }
+    for (const [peerId, peer] of groupPeers.entries()) {
+        if (peer && peer.pc) {
+            await applySenderVideoQuality(peer.pc, peerRequestedQualities.get(peerId));
+        }
+    }
+}
+
 async function requestCameraStreamForQuality(facingMode, exactFacing = false) {
     const { profile } = getEffectiveQualityProfile();
     const facingConstraint = exactFacing ? { exact: facingMode } : facingMode;
+    // Use ideal + max (never force high min) so weak hardware/connections gracefully step lower
     const attempts = [
         {
             video: {
-                width: { ideal: profile.width, min: 320 },
-                height: { ideal: profile.height, min: 240 },
-                frameRate: { ideal: profile.fps, max: 30 },
+                width: { min: 160, ideal: profile.width, max: profile.width },
+                height: { min: 120, ideal: profile.height, max: profile.height },
+                frameRate: { min: 8, ideal: profile.fps, max: profile.fps },
+                facingMode: facingConstraint
+            }
+        },
+        {
+            video: {
+                width: { ideal: profile.width },
+                height: { ideal: profile.height },
                 facingMode: facingConstraint
             }
         },
@@ -3933,9 +3978,9 @@ async function applyConstraintsToStream(stream) {
     const { profile } = getEffectiveQualityProfile();
     try {
         await track.applyConstraints({
-            width: { ideal: profile.width, min: 320 },
-            height: { ideal: profile.height, min: 240 },
-            frameRate: { ideal: profile.fps, max: 30 }
+            width: { min: 160, ideal: profile.width, max: profile.width },
+            height: { min: 120, ideal: profile.height, max: profile.height },
+            frameRate: { min: 8, ideal: profile.fps, max: profile.fps }
         });
     } catch (e) {}
 }
@@ -3958,8 +4003,10 @@ function emitCurrentQualityPref(scope = 'both', targetMemberId = null) {
 }
 
 function updateQualityUiBadges() {
-    const { mode, profile, autoInfo } = getEffectiveQualityProfile();
-    const badgeLabel = mode === 'auto' ? `AUTO` : profile.badge;
+    const { mode, profile, throttledByNetwork, userMaxProfile, autoInfo } = getEffectiveQualityProfile();
+    const badgeLabel = mode === 'auto'
+        ? `AUTO`
+        : (throttledByNetwork ? `${profile.badge}*` : profile.badge);
     const isSaver = profile.key === '360p' || profile.key === '480p';
     const isHd = profile.key === '720p' || profile.key === '1080p';
 
@@ -3972,14 +4019,20 @@ function updateQualityUiBadges() {
         if (btn) {
             btn.classList.toggle('is-saver', isSaver);
             btn.classList.toggle('is-hd', isHd && !isSaver);
-            btn.title = `Video Quality: ${mode === 'auto' ? autoInfo.networkLabel : profile.label}`;
+            btn.title = throttledByNetwork
+                ? `Max ${userMaxProfile.badge} — network adapted to ${profile.badge}`
+                : `Video Quality: ${mode === 'auto' ? autoInfo.networkLabel : profile.label}`;
         }
     }
 
     const netEl = document.getElementById('quality-network-status');
-    if (netEl) netEl.innerText = autoInfo.networkLabel;
+    if (netEl) {
+        netEl.innerText = throttledByNetwork
+            ? `Adapting smoothly: ${profile.badge} (below your ${userMaxProfile.badge} max due to signal)`
+            : autoInfo.networkLabel;
+    }
     const autoDesc = document.getElementById('q-auto-desc');
-    if (autoDesc) autoDesc.innerText = `Currently: ${profile.label} (switches automatically with network)`;
+    if (autoDesc) autoDesc.innerText = `Currently: ${profile.label} (adapts smoothly to internet speed)`;
 
     document.querySelectorAll('#quality-options-list .quality-option-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.quality === privateQualityMode);
@@ -3988,23 +4041,12 @@ function updateQualityUiBadges() {
 
 async function setVideoQualityPreference(mode) {
     privateQualityMode = (mode === 'auto' || QUALITY_PRESETS[mode]) ? mode : 'auto';
+    // Reset congestion backoff to user's chosen ceiling; live stats will smoothly throttle if needed
+    liveNetworkTierKey = QUALITY_PRESETS[privateQualityMode] ? privateQualityMode : '1080p';
+    healthyProbeStreak = 0;
     try { localStorage.setItem('gc_video_quality', privateQualityMode); } catch (e) {}
     updateQualityUiBadges();
-
-    if (isPrivateCameraOn && privateLocalVideoStream && !isPrivateScreenSharing) {
-        await applyConstraintsToStream(privateLocalVideoStream);
-    }
-    if (isLocalCameraOn && groupVideoStream && !isGroupScreenSharing) {
-        await applyConstraintsToStream(groupVideoStream);
-    }
-    if (peerConnection) {
-        await applySenderVideoQuality(peerConnection, partnerRequestedQuality);
-    }
-    for (const [peerId, peer] of groupPeers.entries()) {
-        if (peer && peer.pc) {
-            await applySenderVideoQuality(peer.pc, peerRequestedQualities.get(peerId));
-        }
-    }
+    await applyQualityToActivePeersAndTracks();
     emitCurrentQualityPref('both');
 }
 
@@ -4024,11 +4066,90 @@ function updateQualityLiveStatsPanel() {
     document.querySelectorAll('video[id^="video-"]:not(.hidden)').forEach(v => {
         if (v.videoWidth > 0) parts.push(`Remote: ${v.videoWidth}x${v.videoHeight}`);
     });
-    const { profile } = getEffectiveQualityProfile();
+    const { profile, throttledByNetwork, userMaxProfile } = getEffectiveQualityProfile();
+    const adaptNote = throttledByNetwork ? ` — adapted below ${userMaxProfile.badge} max` : '';
     statsEl.innerText = parts.length > 0
-        ? `Live: ${parts.join(' | ')} (Target max ${(profile.maxBitrate / 1000).toFixed(0)} kbps)`
-        : `Target: ${profile.label} (~${(profile.maxBitrate / 1000).toFixed(0)} kbps max) — Turn on video to view live pixels`;
+        ? `Live: ${parts.join(' | ')} (Max ${(profile.maxBitrate / 1000).toFixed(0)} kbps${adaptNote})`
+        : `Target: ${profile.label} (~${(profile.maxBitrate / 1000).toFixed(0)} kbps max${adaptNote})`;
 }
+
+// Live WebRTC congestion & packet-loss monitor (runs every 3.5s during active calls)
+async function measureConnectionAndAdapt() {
+    const activePcs = [];
+    if (peerConnection && ['connected', 'completed'].includes(peerConnection.iceConnectionState) && isPrivateCameraOn) {
+        activePcs.push(peerConnection);
+    }
+    if (isLocalCameraOn) {
+        for (const peer of groupPeers.values()) {
+            if (peer && peer.pc && ['connected', 'completed'].includes(peer.pc.iceConnectionState)) {
+                activePcs.push(peer.pc);
+            }
+        }
+    }
+    if (activePcs.length === 0) return;
+
+    let minAvailBps = Infinity;
+    let maxRttSec = 0;
+    let maxFracLost = 0;
+
+    for (const pc of activePcs) {
+        try {
+            const report = await pc.getStats();
+            report.forEach(stat => {
+                if (stat.type === 'candidate-pair' && stat.state === 'succeeded') {
+                    if (typeof stat.availableOutgoingBitrate === 'number' && stat.availableOutgoingBitrate > 0) {
+                        minAvailBps = Math.min(minAvailBps, stat.availableOutgoingBitrate);
+                    }
+                    if (typeof stat.currentRoundTripTime === 'number') {
+                        maxRttSec = Math.max(maxRttSec, stat.currentRoundTripTime);
+                    }
+                } else if (stat.type === 'remote-inbound-rtp' && stat.kind === 'video') {
+                    if (typeof stat.fractionLost === 'number') {
+                        maxFracLost = Math.max(maxFracLost, stat.fractionLost);
+                    }
+                    if (typeof stat.roundTripTime === 'number') {
+                        maxRttSec = Math.max(maxRttSec, stat.roundTripTime);
+                    }
+                }
+            });
+        } catch (e) {}
+    }
+
+    const { userMaxKey, effectiveKey, profile } = getEffectiveQualityProfile();
+    const curIdx = QUALITY_TIER_ORDER.indexOf(effectiveKey);
+    const maxIdx = QUALITY_TIER_ORDER.indexOf(userMaxKey);
+    const congested = maxFracLost > 0.05 || maxRttSec > 0.45 || (minAvailBps < Infinity && minAvailBps < profile.maxBitrate * 0.55);
+
+    if (congested && curIdx > 0) {
+        healthyProbeStreak = 0;
+        const lowerKey = QUALITY_TIER_ORDER[curIdx - 1];
+        if (lowerKey !== liveNetworkTierKey) {
+            liveNetworkTierKey = lowerKey;
+            console.log(`[Quality] Network congested (avail=${Math.round(minAvailBps / 1000)}kbps, rtt=${maxRttSec.toFixed(2)}s, loss=${(maxFracLost * 100).toFixed(1)}%) -> adapting smoothly to ${lowerKey}`);
+            updateQualityUiBadges();
+            await applyQualityToActivePeersAndTracks();
+            emitCurrentQualityPref('both');
+        }
+    } else if (!congested && curIdx < maxIdx) {
+        const nextKey = QUALITY_TIER_ORDER[curIdx + 1];
+        const nextPreset = QUALITY_PRESETS[nextKey];
+        const roomToGrow = minAvailBps === Infinity || minAvailBps >= nextPreset.maxBitrate * 1.15;
+        if (roomToGrow && maxRttSec < 0.25 && maxFracLost < 0.015) {
+            healthyProbeStreak++;
+            if (healthyProbeStreak >= 2) {
+                healthyProbeStreak = 0;
+                liveNetworkTierKey = nextKey;
+                console.log(`[Quality] Network healthy -> stepping up toward ceiling: ${nextKey}`);
+                updateQualityUiBadges();
+                await applyQualityToActivePeersAndTracks();
+                emitCurrentQualityPref('both');
+            }
+        } else {
+            healthyProbeStreak = 0;
+        }
+    }
+}
+setInterval(() => { measureConnectionAndAdapt(); }, 3500);
 
 // Incoming peer quality preference handlers (two-way student data saver!)
 socket.on('private_quality_pref', async (pref) => {

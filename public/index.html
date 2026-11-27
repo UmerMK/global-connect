@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=8.0">
+    <link rel="stylesheet" href="style.css?v=8.1">
     <style>
         .visualizer-pair {
             display: flex;
@@ -697,35 +697,35 @@
             <button type="button" class="quality-option-btn active" data-quality="auto">
                 <div class="q-opt-main">
                     <span class="q-opt-title">⚡ Auto (Smart)</span>
-                    <span class="q-opt-desc" id="q-auto-desc">Adapts to Wi-Fi (HD) or Mobile Data (Data Saver)</span>
+                    <span class="q-opt-desc" id="q-auto-desc">Adapts smoothly from 360p to 1080p with your live speed</span>
                 </div>
                 <span class="q-opt-check"><i class="fas fa-check-circle"></i></span>
             </button>
             <button type="button" class="quality-option-btn" data-quality="360p">
                 <div class="q-opt-main">
-                    <span class="q-opt-title">🌿 Data Saver (360p)</span>
-                    <span class="q-opt-desc">Uses ~80% less mobile data (both send &amp; receive)</span>
+                    <span class="q-opt-title">🌿 Data Saver (Max 360p)</span>
+                    <span class="q-opt-desc">Hard cap at 360p — saves ~80% data (send &amp; receive)</span>
                 </div>
                 <span class="q-opt-check"><i class="fas fa-check-circle"></i></span>
             </button>
             <button type="button" class="quality-option-btn" data-quality="480p">
                 <div class="q-opt-main">
-                    <span class="q-opt-title">📱 Standard (480p)</span>
-                    <span class="q-opt-desc">Smooth on 4G mobile data (~650 kbps)</span>
+                    <span class="q-opt-title">📱 Standard (Max 480p)</span>
+                    <span class="q-opt-desc">Up to 480p — smooth on 4G mobile data, lowers on weak signal</span>
                 </div>
                 <span class="q-opt-check"><i class="fas fa-check-circle"></i></span>
             </button>
             <button type="button" class="quality-option-btn" data-quality="720p">
                 <div class="q-opt-main">
-                    <span class="q-opt-title">✨ HD (720p)</span>
-                    <span class="q-opt-desc">Sharp clarity for fast Wi-Fi / 5G (~1.5 Mbps)</span>
+                    <span class="q-opt-title">✨ HD (Max 720p)</span>
+                    <span class="q-opt-desc">Up to 720p — scales down smoothly if your internet slows</span>
                 </div>
                 <span class="q-opt-check"><i class="fas fa-check-circle"></i></span>
             </button>
             <button type="button" class="quality-option-btn" data-quality="1080p">
                 <div class="q-opt-main">
-                    <span class="q-opt-title">💎 Full HD (1080p)</span>
-                    <span class="q-opt-desc">Maximum camera clarity on high-speed Wi-Fi (~3 Mbps)</span>
+                    <span class="q-opt-title">💎 Full HD (Max 1080p)</span>
+                    <span class="q-opt-desc">Up to 1080p max — automatically adapts down on slow data, never lags</span>
                 </div>
                 <span class="q-opt-check"><i class="fas fa-check-circle"></i></span>
             </button>
@@ -738,7 +738,7 @@
 
     <!-- Load Socket.IO client library -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="script.js?v=8.0"></script>
+    <script src="script.js?v=8.1"></script>
 </body>
 
 </html>
