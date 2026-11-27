@@ -918,6 +918,34 @@ io.on('connection', (socket) => {
         socket.emit('group_left_confirmed');
     });
 
+    // Host moderator controls for private PIN Friends Rooms (Owner only)
+    socket.on('group_host_action', ({ targetId, action } = {}, callback) => {
+        if (!socket.groupPin || socket.groupPin === PUBLIC_LIVE_PIN || !socket.isGroupOwner) {
+            if (typeof callback === 'function') callback({ success: false, error: 'Host permission required.' });
+            return;
+        }
+        const targetSocket = targetId ? io.sockets.sockets.get(targetId) : null;
+        if (!targetSocket || targetSocket.groupPin !== socket.groupPin || targetSocket.id === socket.id) {
+            if (typeof callback === 'function') callback({ success: false, error: 'Participant not in room.' });
+            return;
+        }
+        const socketRoom = `group_${socket.groupPin}`;
+        if (action === 'mute') {
+            targetSocket.isAudioMuted = true;
+            io.to(socketRoom).emit('group_media_state', {
+                memberId: targetSocket.id,
+                isAudioMuted: true,
+                isCameraOn: !!targetSocket.isCameraOn
+            });
+            targetSocket.emit('group_force_mute', { by: socket.displayName || 'Host' });
+            if (typeof callback === 'function') callback({ success: true });
+        } else if (action === 'kick') {
+            targetSocket.emit('group_kicked', { message: 'You were removed from the room by the host.' });
+            handleLeaveGroup(targetSocket);
+            if (typeof callback === 'function') callback({ success: true });
+        }
+    });
+
     // Delete group (owner only)
     socket.on('group_delete', ({ pin, name, ownerToken }, callback) => {
         const targetPin = pin || socket.groupPin;

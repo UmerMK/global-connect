@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=8.2">
+    <link rel="stylesheet" href="style.css?v=9.0">
     <style>
         .visualizer-pair {
             display: flex;
@@ -510,6 +510,9 @@
                                 <div class="status-overlay">
                                     <span id="local-speaking-pill" class="speaking-pill hidden">Speaking</span>
                                     <div class="media-badges">
+                                        <button type="button" id="local-spotlight-btn" class="spotlight-toggle-btn" title="Focus / Pin Your Video">
+                                            <i class="fas fa-expand-alt"></i>
+                                        </button>
                                         <span id="local-mic-indicator" class="media-badge mic-on" title="Microphone Active">
                                             <i class="fas fa-microphone"></i>
                                         </span>
@@ -809,7 +812,7 @@
 
     <!-- Load Socket.IO client library -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="script.js?v=8.2"></script>
+    <script src="script.js?v=9.0"></script></script>
 </body>
 
 </html>

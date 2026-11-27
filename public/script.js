@@ -1,4 +1,4 @@
-console.log("CONNECTED_JS_VERSION: 8.2 - Voice Notes, Live MB Meter, PWA & Organized Phone UI");
+console.log("CONNECTED_JS_VERSION: 9.0 - Desktop Studio Mode + Host Mod + Click-to-Pin + Voice Notes");
 if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     alert("CRITICAL: You are using HTTP. WebRTC (Voice) requires HTTPS to work. Redirecting to Secure Site...");
     window.location.href = window.location.href.replace('http:', 'https:');
@@ -2902,10 +2902,32 @@ function setLocalSpeaking(speaking) {
 // ==========================================
 // 7. PARTICIPANT UI MANAGEMENT & DYNAMIC GRID
 // ==========================================
+function toggleSpotlightCard(card) {
+    if (!card || !groupParticipantsGrid) return;
+    const wasSpotlight = card.classList.contains('is-spotlight');
+    groupParticipantsGrid.querySelectorAll('.participant-card.is-spotlight').forEach(c => {
+        c.classList.remove('is-spotlight');
+        const icon = c.querySelector('.spotlight-toggle-btn i');
+        if (icon) icon.className = 'fas fa-expand-alt';
+    });
+    if (!wasSpotlight) {
+        card.classList.add('is-spotlight');
+        const icon = card.querySelector('.spotlight-toggle-btn i');
+        if (icon) icon.className = 'fas fa-compress-alt';
+    }
+}
+
+document.getElementById('local-spotlight-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSpotlightCard(document.getElementById('card-local'));
+});
+document.getElementById('card-local')?.addEventListener('dblclick', () => {
+    toggleSpotlightCard(document.getElementById('card-local'));
+});
+
 function createRemoteParticipantCard(memberId, displayName, isOwner, avatarUrl) {
     const existingCard = document.getElementById(`card-${memberId}`);
     if (existingCard) {
-        // If card exists but had temporary display name, update it
         const nameEl = existingCard.querySelector('.participant-name');
         if (nameEl && displayName && displayName !== 'Friend') {
             nameEl.innerText = `${displayName}${isOwner ? ' (Host)' : ''}`;
@@ -2918,6 +2940,16 @@ function createRemoteParticipantCard(memberId, displayName, isOwner, avatarUrl) 
     card.id = `card-${memberId}`;
 
     const avatarSrc = getStableAvatarForUser(memberId, avatarUrl);
+    const hostModHtml = (isCurrentGroupOwner && !isPublicRoomMode)
+        ? `
+            <button type="button" class="host-mod-btn host-mute-btn" title="Mute participant (Host)">
+                <i class="fas fa-volume-mute"></i>
+            </button>
+            <button type="button" class="host-mod-btn host-kick-btn is-kick" title="Remove from room (Host)">
+                <i class="fas fa-user-times"></i>
+            </button>
+        `
+        : '';
 
     card.innerHTML = `
         <div class="media-wrapper">
@@ -2929,7 +2961,8 @@ function createRemoteParticipantCard(memberId, displayName, isOwner, avatarUrl) 
             <div class="status-overlay">
                 <span id="speaking-pill-${memberId}" class="speaking-pill hidden">Speaking</span>
                 <div class="media-badges">
-                    <button type="button" class="spotlight-toggle-btn" title="Focus / Enlarge Video">
+                    ${hostModHtml}
+                    <button type="button" class="spotlight-toggle-btn" title="Focus / Pin Video">
                         <i class="fas fa-expand-alt"></i>
                     </button>
                     <span id="mic-badge-${memberId}" class="media-badge mic-on" title="Microphone Active">
@@ -2946,29 +2979,54 @@ function createRemoteParticipantCard(memberId, displayName, isOwner, avatarUrl) 
         </div>
     `;
 
-    const spotBtn = card.querySelector('.spotlight-toggle-btn');
-    if (spotBtn) {
-        spotBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const wasSpotlight = card.classList.contains('is-spotlight');
-            if (groupParticipantsGrid) {
-                groupParticipantsGrid.querySelectorAll('.participant-card.is-spotlight').forEach(c => {
-                    c.classList.remove('is-spotlight');
-                    const icon = c.querySelector('.spotlight-toggle-btn i');
-                    if (icon) icon.className = 'fas fa-expand-alt';
-                });
-            }
-            if (!wasSpotlight) {
-                card.classList.add('is-spotlight');
-                const icon = spotBtn.querySelector('i');
-                if (icon) icon.className = 'fas fa-compress-alt';
-            }
-        });
-    }
+    card.querySelector('.spotlight-toggle-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleSpotlightCard(card);
+    });
+    card.addEventListener('dblclick', () => toggleSpotlightCard(card));
+
+    card.querySelector('.host-mute-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        socket.emit('group_host_action', { targetId: memberId, action: 'mute' });
+    });
+    card.querySelector('.host-kick-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm(`Remove ${displayName} from this room?`)) {
+            socket.emit('group_host_action', { targetId: memberId, action: 'kick' });
+        }
+    });
 
     groupParticipantsGrid.appendChild(card);
     updateLiveGridLayout();
 }
+
+socket.on('group_force_mute', ({ by } = {}) => {
+    if (groupAudioStream) {
+        groupAudioStream.getAudioTracks().forEach(t => { t.enabled = false; });
+    }
+    isGroupAudioMuted = true;
+    if (groupMicBtn) {
+        groupMicBtn.classList.add('muted');
+        const icon = groupMicBtn.querySelector('i');
+        if (icon) icon.className = 'fas fa-microphone-slash';
+    }
+    if (localMicIndicator) {
+        localMicIndicator.className = 'media-badge mic-muted';
+        localMicIndicator.innerHTML = '<i class="fas fa-microphone-slash"></i>';
+    }
+    if (liveOverlayStream) {
+        const note = document.createElement('div');
+        note.className = 'live-stream-welcome-bubble';
+        note.innerHTML = `<i class="fas fa-microphone-slash"></i> ${escapeHtml(by || 'Host')} muted your microphone.`;
+        liveOverlayStream.appendChild(note);
+        liveOverlayStream.scrollTop = liveOverlayStream.scrollHeight;
+    }
+});
+
+socket.on('group_kicked', ({ message } = {}) => {
+    alert(message || 'You were removed from the room by the host.');
+    leaveGroupRoom();
+});
 
 function removeRemoteParticipant(memberId) {
     const peer = groupPeers.get(memberId);
